@@ -1,0 +1,15 @@
+node_modules
+
+tx9/jobs
+
+.env
+
+sessions
+
+auth.json
+
+models.json
+
+extensions/oc.ts
+
+extensions/tx9/
