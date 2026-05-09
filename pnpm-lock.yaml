@@ -14,9 +14,15 @@ importers:
       '@mariozechner/pi-coding-agent':
         specifier: ^0.66.1
         version: 0.66.1(ws@8.20.0)(zod@4.3.6)
+      '@mariozechner/pi-tui':
+        specifier: ^0.66.1
+        version: 0.66.1
       '@mendable/firecrawl-js':
         specifier: ^4.20.0
         version: 4.20.0
+      '@sinclair/typebox':
+        specifier: 0.34.49
+        version: 0.34.49
       typebox:
         specifier: ^1.1.33
         version: 1.1.33
@@ -24,6 +30,9 @@ importers:
       '@types/node':
         specifier: ^25.6.0
         version: 25.6.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
 
 packages:
 
@@ -1106,6 +1115,11 @@ packages:
 
   typescript-event-target@1.1.2:
     resolution: {integrity: sha512-TvkrTUpv7gCPlcnSoEwUVUBwsdheKm+HF5u2tPAKubkIGMfovdSizCTaZRY/NhR8+Ijy8iZZUapbVQAsNrkFrw==}
+
+  typescript@6.0.3:
+    resolution: {integrity: sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw==}
+    engines: {node: '>=14.17'}
+    hasBin: true
 
   uint8array-extras@1.5.0:
     resolution: {integrity: sha512-rvKSBiC5zqCCiDZ9kAOszZcDvdAHwwIKJG33Ykj43OKcWsnmcBRL09YTU4nOeHZ8Y2a7l1MgTd08SBe9A8Qj6A==}
@@ -2668,6 +2682,8 @@ snapshots:
   typebox@1.1.33: {}
 
   typescript-event-target@1.1.2: {}
+
+  typescript@6.0.3: {}
 
   uint8array-extras@1.5.0: {}
 

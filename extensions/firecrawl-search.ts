@@ -4,7 +4,7 @@ import { join } from "node:path";
 import Firecrawl from "@mendable/firecrawl-js";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { StringEnum } from "@mariozechner/pi-ai";
-import { Type } from "typebox";
+import { Type } from "@sinclair/typebox";
 
 function readEnvValue(name: string) {
   if (process.env[name]) return process.env[name];
@@ -74,7 +74,10 @@ export default function (pi: ExtensionAPI) {
     }),
     async execute(_toolCallId, params, signal, onUpdate) {
       try {
-        onUpdate?.({ content: [{ type: "text", text: `Searching Firecrawl for: ${params.query}` }] });
+        onUpdate?.({
+          content: [{ type: "text", text: `Searching Firecrawl for: ${params.query}` }],
+          details: undefined,
+        });
 
         const client = createClient();
         const result = await client.search(params.query, {
@@ -118,7 +121,10 @@ export default function (pi: ExtensionAPI) {
     }),
     async execute(_toolCallId, params, signal, onUpdate) {
       try {
-        onUpdate?.({ content: [{ type: "text", text: `Scraping page with Firecrawl: ${params.url}` }] });
+        onUpdate?.({
+          content: [{ type: "text", text: `Scraping page with Firecrawl: ${params.url}` }],
+          details: undefined,
+        });
 
         const client = createClient();
         const document = await client.scrape(params.url, {

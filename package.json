@@ -14,10 +14,13 @@
   "dependencies": {
     "@mariozechner/pi-ai": "^0.66.1",
     "@mariozechner/pi-coding-agent": "^0.66.1",
+    "@mariozechner/pi-tui": "^0.66.1",
     "@mendable/firecrawl-js": "^4.20.0",
+    "@sinclair/typebox": "0.34.49",
     "typebox": "^1.1.33"
   },
   "devDependencies": {
-    "@types/node": "^25.6.0"
+    "@types/node": "^25.6.0",
+    "typescript": "^6.0.3"
   }
 }
