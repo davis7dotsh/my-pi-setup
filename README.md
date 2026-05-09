@@ -13,5 +13,5 @@ _i don't actually recommend u use this setup. it's just a reference at what's po
 ## what u actually should do
 
 1. install pi: https://pi.dev
-2. open it, then run "/login" with codex. then pick gpt-5.5 with low reasoning (press tab to cycle reasoning levels)
+2. open it, then run "/login" with codex. then pick gpt-5.5 with low reasoning (press shift+tab to cycle reasoning levels)
 3. try it, anytime u find urself wanting something make a new pi instance and ask it to make it for u. I'm serious try it, it just magically works
