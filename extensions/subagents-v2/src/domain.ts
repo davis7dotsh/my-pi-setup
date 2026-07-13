@@ -7,6 +7,7 @@
  * normalized `SubagentEvent` union.
  */
 
+import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { Data } from "effect";
 
 export const BACKEND_NAMES = ["pi", "claude", "codex"] as const;
@@ -38,6 +39,8 @@ export interface ParentContext {
   /** Parent pi model, for the pi backend's "inherit" default. */
   readonly inheritedModel?: { readonly provider: string; readonly id: string };
   readonly inheritedThinkingLevel?: string;
+  /** Parent model registry; required by the pi backend to resolve models. */
+  readonly modelRegistry?: ModelRegistry;
 }
 
 export interface SpawnTask {

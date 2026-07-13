@@ -280,6 +280,7 @@ export default function (pi: ExtensionAPI) {
               ? { provider: ctx.model.provider, id: ctx.model.id }
               : undefined,
             inheritedThinkingLevel: pi.getThinkingLevel(),
+            modelRegistry: ctx.modelRegistry,
           },
         }),
       );

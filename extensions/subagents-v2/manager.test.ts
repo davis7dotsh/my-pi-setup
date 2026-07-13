@@ -43,10 +43,10 @@ test("stub subagent completes and delivers a final result", async () => {
 
     const snap = await runTool(
       runtime,
-      manager.spawn("pi", task("Say hello to the tests")),
+      manager.spawn("claude", task("Say hello to the tests")),
     );
     assert.equal(snap.status, "running");
-    assert.equal(snap.backend, "pi");
+    assert.equal(snap.backend, "claude");
     assert.ok(snap.meta.sessionFilePath);
 
     await runTool(runtime, manager.waitFor([snap.id]));
@@ -55,7 +55,7 @@ test("stub subagent completes and delivers a final result", async () => {
     assert.equal(done.status, "done");
     assert.match(
       done.finalText,
-      /\[stub:pi\] completed: Say hello to the tests/,
+      /\[stub:claude\] completed: Say hello to the tests/,
     );
     assert.ok(done.turns >= 2);
     assert.ok(done.transcript.some((item) => item.kind === "toolResult"));
@@ -106,15 +106,27 @@ test("the concurrency cap rejects a fifth running subagent", async () => {
       runtime,
       Effect.forEach(
         [1, 2, 3, 4],
-        (n) => manager.spawn("pi", task(`Task ${n}`)),
+        (n) => manager.spawn("codex", task(`Task ${n}`)),
         { concurrency: "unbounded" },
       ),
     );
     assert.equal(spawns.length, 4);
     await assert.rejects(
-      runTool(runtime, manager.spawn("pi", task("Task 5"))),
+      runTool(runtime, manager.spawn("codex", task("Task 5"))),
       /Max 4 subagents/,
     );
+  });
+});
+
+test("pi spawn fails fast without the parent model registry", async () => {
+  await withManager(async (manager, runtime) => {
+    await assert.rejects(
+      runTool(runtime, manager.spawn("pi", task("needs a registry"))),
+      /model registry/,
+    );
+    // The failed spawn must release its concurrency reservation.
+    const snap = await runTool(runtime, manager.spawn("codex", task("ok")));
+    assert.equal(snap.backend, "codex");
   });
 });
 
@@ -122,7 +134,7 @@ test("send steers an idle subagent into another turn", async () => {
   await withManager(async (manager, runtime) => {
     const snap = await runTool(
       runtime,
-      manager.spawn("pi", task("First turn")),
+      manager.spawn("claude", task("First turn")),
     );
     await runTool(runtime, manager.waitFor([snap.id]));
     const afterFirst = manager.view.get(snap.id);
