@@ -41,7 +41,7 @@ import {
   BACKEND_NAMES,
   formatElapsed,
   latestText,
-  type BackendName,
+  REASONING_EFFORTS,
   type SubagentSnapshot,
 } from "./src/domain.ts";
 import {
@@ -75,16 +75,6 @@ import { openSubagentPicker } from "./src/ui/takeover.ts";
 const SUBAGENT_OUTPUT_MAX_BYTES = 24 * 1024;
 const WAIT_OUTPUT_MAX_BYTES = 48 * 1024;
 const WAIT_PER_AGENT_MAX_BYTES = 16 * 1024;
-
-const THINKING_LEVELS = [
-  "off",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-] as const;
 
 function describeSubagent(snap: SubagentSnapshot): string {
   const details = [
@@ -239,14 +229,12 @@ export default function (pi: ExtensionAPI) {
       prompt: Type.String({
         description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.prompt,
       }),
-      title: Type.String({
-        description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.title,
+      name: Type.String({
+        description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.name,
       }),
-      agent: Type.Optional(
-        StringEnum(BACKEND_NAMES, {
-          description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.agent,
-        }),
-      ),
+      harness: StringEnum(BACKEND_NAMES, {
+        description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.harness,
+      }),
       working_dir: Type.Optional(
         Type.String({
           description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.workingDir,
@@ -258,29 +246,29 @@ export default function (pi: ExtensionAPI) {
         }),
       ),
       reasoning_effort: Type.Optional(
-        StringEnum(THINKING_LEVELS, {
+        StringEnum(REASONING_EFFORTS, {
           description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.reasoningEffort,
         }),
       ),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const manager = await getManager();
-      const backend: BackendName = params.agent ?? "pi";
+      const harness = params.harness;
 
       const cwd = path.resolve(ctx.cwd, params.working_dir ?? ".");
       if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
         throw new Error(`working_dir is not a directory: ${cwd}`);
       }
 
-      const title = params.title.trim().slice(0, 160) || "subagent";
+      const title = params.name.trim().slice(0, 160) || "subagent";
       const snap = await runTool(
         getRuntime(),
-        manager.spawn(backend, {
+        manager.spawn(harness, {
           prompt: params.prompt,
           title,
           cwd,
           model: params.model,
-          reasoningEffort: params.reasoning_effort ?? pi.getThinkingLevel(),
+          reasoningEffort: params.reasoning_effort,
           parent: {
             parentCwd: ctx.cwd,
             projectTrusted: resolveChildProjectTrust({
@@ -303,7 +291,7 @@ export default function (pi: ExtensionAPI) {
             text: buildSubagentSpawnResult({
               id: snap.id,
               title: snap.title,
-              backend,
+              harness,
               modelLabel: snap.meta.modelLabel ?? "?",
               cwd,
             }),
@@ -313,7 +301,7 @@ export default function (pi: ExtensionAPI) {
           id: snap.id,
           title: snap.title,
           cwd,
-          backend,
+          harness,
           model: snap.meta.modelLabel,
         },
       };
@@ -508,7 +496,7 @@ export default function (pi: ExtensionAPI) {
           subagents: subs.map((snap) => ({
             id: snap.id,
             title: snap.title,
-            backend: snap.backend,
+            harness: snap.backend,
             status: snap.status,
           })),
         },

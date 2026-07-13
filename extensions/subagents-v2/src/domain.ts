@@ -12,6 +12,23 @@ import { Data } from "effect";
 export const BACKEND_NAMES = ["pi", "claude", "codex"] as const;
 export type BackendName = (typeof BACKEND_NAMES)[number];
 
+/**
+ * Shared reasoning-effort scale (pi's thinking levels). Each backend maps a
+ * value to its nearest native equivalent: pi uses it directly, codex
+ * translates to its reasoning-effort slugs, claude translates to thinking
+ * budgets. Omitted = backend default (pi inherits the parent level).
+ */
+export const REASONING_EFFORTS = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
+export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
+
 export type SubagentStatus = "running" | "done" | "error";
 
 /** Parent-session context resolved by the tool layer and passed opaquely. */
@@ -33,8 +50,8 @@ export interface SpawnTask {
    * codex: model slug. Omitted = backend default / inherit.
    */
   readonly model?: string;
-  /** Thinking level / reasoning effort, interpreted per backend. */
-  readonly reasoningEffort?: string;
+  /** Shared effort scale; each backend maps it to its native equivalent. */
+  readonly reasoningEffort?: ReasoningEffort;
   readonly parent: ParentContext;
 }
 
