@@ -12,6 +12,7 @@ import {
   type AgentToolUpdateCallback,
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
+import { Cause, Data, Effect, Exit } from "effect";
 import { Firecrawl } from "firecrawl";
 import { Type } from "typebox";
 import {
@@ -79,6 +80,42 @@ function stringify(value: unknown) {
   return JSON.stringify(value, null, 2);
 }
 
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+class FirecrawlError extends Data.TaggedError("FirecrawlError")<{
+  readonly message: string;
+  readonly cause: unknown;
+}> {}
+
+function firecrawlRequest<T>(request: () => Promise<T>) {
+  return Effect.tryPromise({
+    try: request,
+    catch: (cause) =>
+      new FirecrawlError({ message: errorMessage(cause), cause }),
+  });
+}
+
+async function runRequest<T>(
+  request: () => Promise<T>,
+  signal: AbortSignal | undefined,
+) {
+  const exit = await Effect.runPromiseExit(
+    firecrawlRequest(request),
+    signal ? { signal } : undefined,
+  );
+
+  if (Exit.isSuccess(exit)) return exit.value;
+  if (Cause.hasInterruptsOnly(exit.cause)) {
+    throw new Error("Firecrawl request cancelled");
+  }
+
+  const cause = Cause.squash(exit.cause);
+  if (cause instanceof FirecrawlError) throw cause.cause;
+  throw cause instanceof Error ? cause : new Error(String(cause));
+}
+
 function checkCancellation(signal: AbortSignal | undefined) {
   if (signal?.aborted) throw new Error("Firecrawl request cancelled");
 }
@@ -113,7 +150,10 @@ async function runFirecrawl<T>(
       details: undefined,
     });
 
-    const { details, output } = await request(createClient());
+    const { details, output } = await runRequest(
+      () => request(createClient()),
+      signal,
+    );
     checkCancellation(signal);
 
     return {
@@ -121,8 +161,8 @@ async function runFirecrawl<T>(
       details,
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Firecrawl ${operation} failed: ${message}`, {
+    if (signal?.aborted) throw error;
+    throw new Error(`Firecrawl ${operation} failed: ${errorMessage(error)}`, {
       cause: error,
     });
   }

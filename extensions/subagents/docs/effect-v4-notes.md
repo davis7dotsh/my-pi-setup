@@ -1,5 +1,10 @@
 # Effect v4 — Practical Notes for the Subagents Extension
 
+> **Building a new pi extension on this stack?** Start with the migration-oriented
+> [`effect-v4-extension-guide.md`](./effect-v4-extension-guide.md) (toolchain setup, the
+> `ManagedRuntime` + `runTool` boundary, when *not* to use Effect, per-extension recipes).
+> This file is the deeper Effect API reference it points back to.
+
 > **Verified against:** `effect@4.0.0-beta.98` and `@effect/platform-node@4.0.0-beta.98`
 > (npm dist-tag `beta`, checked 2026-07-13). Every snippet in this doc was type-checked
 > with `tsc --strict` against these packages, and the process-spawning / runtime snippets

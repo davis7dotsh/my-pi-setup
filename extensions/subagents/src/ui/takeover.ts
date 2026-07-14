@@ -53,6 +53,8 @@ export async function openSubagentPicker(
   ctx: ExtensionCommandContext,
   view: SubagentReadModel,
 ) {
+  const selection: DashboardSelection = { index: 0 };
+
   while (true) {
     if (view.size() === 0) {
       ctx.ui.notify("No subagents", "info");
@@ -61,7 +63,7 @@ export async function openSubagentPicker(
 
     const picked = await ctx.ui.custom<string | null>(
       (tui, theme, keybindings, done) =>
-        new SubagentDashboard(tui, theme, keybindings, view, done),
+        new SubagentDashboard(tui, theme, keybindings, view, selection, done),
       {
         overlay: true,
         overlayOptions: { anchor: "center", width: "100%", maxHeight: "100%" },
@@ -85,14 +87,33 @@ export async function openSubagentPicker(
 
 // --- Dashboard (fullscreen overlay) ----------------------------------------------
 
+export interface DashboardSelection {
+  id?: string;
+  index: number;
+}
+
+export function reconcileDashboardSelection(
+  selection: DashboardSelection,
+  subs: ReadonlyArray<Pick<SubagentSnapshot, "id">>,
+) {
+  const stableIndex = selection.id
+    ? subs.findIndex((snap) => snap.id === selection.id)
+    : -1;
+  selection.index =
+    stableIndex >= 0
+      ? stableIndex
+      : Math.min(Math.max(0, selection.index), Math.max(0, subs.length - 1));
+  selection.id = subs[selection.index]?.id;
+}
+
 class SubagentDashboard implements Component {
   private tui: TUI;
   private theme: Theme;
   private keybindings: KeybindingsManager;
   private view: SubagentReadModel;
+  private selection: DashboardSelection;
   private done: (value: string | null) => void;
 
-  private selected = 0;
   private closed = false;
   private ticker: ReturnType<typeof setInterval>;
   private unsubChange: () => void;
@@ -102,12 +123,14 @@ class SubagentDashboard implements Component {
     theme: Theme,
     keybindings: KeybindingsManager,
     view: SubagentReadModel,
+    selection: DashboardSelection,
     done: (value: string | null) => void,
   ) {
     this.tui = tui;
     this.theme = theme;
     this.keybindings = keybindings;
     this.view = view;
+    this.selection = selection;
     this.done = done;
     // Elapsed times, token counts, and statuses tick along at 1Hz.
     this.ticker = setInterval(() => this.tui.requestRender(), 1000);
@@ -118,49 +141,54 @@ class SubagentDashboard implements Component {
     return this.view.list();
   }
 
-  private clampSelection() {
-    const count = this.subs().length;
-    if (this.selected >= count) this.selected = Math.max(0, count - 1);
-    if (this.selected < 0) this.selected = 0;
-  }
-
-  private close(result: string | null) {
-    if (this.closed) return;
+  private cleanup() {
+    if (this.closed) return false;
     this.closed = true;
     clearInterval(this.ticker);
     this.unsubChange();
-    this.done(result);
+    return true;
+  }
+
+  private close(result: string | null) {
+    if (this.cleanup()) this.done(result);
+  }
+
+  dispose(): void {
+    this.cleanup();
   }
 
   handleInput(data: string): void {
-    this.clampSelection();
     const subs = this.subs();
+    reconcileDashboardSelection(this.selection, subs);
 
     if (this.keybindings.matches(data, "tui.select.cancel")) {
       this.close(null);
       return;
     }
     if (this.keybindings.matches(data, "tui.select.confirm")) {
-      const snap = subs[this.selected];
+      const snap = subs[this.selection.index];
       if (snap) this.close(snap.id);
       return;
     }
     if (this.keybindings.matches(data, "tui.select.up") || data === "k") {
       if (subs.length > 0) {
-        this.selected = (this.selected - 1 + subs.length) % subs.length;
+        this.selection.index =
+          (this.selection.index - 1 + subs.length) % subs.length;
+        this.selection.id = subs[this.selection.index]?.id;
         this.tui.requestRender();
       }
       return;
     }
     if (this.keybindings.matches(data, "tui.select.down") || data === "j") {
       if (subs.length > 0) {
-        this.selected = (this.selected + 1) % subs.length;
+        this.selection.index = (this.selection.index + 1) % subs.length;
+        this.selection.id = subs[this.selection.index]?.id;
         this.tui.requestRender();
       }
       return;
     }
     if (data === "x") {
-      const snap = subs[this.selected];
+      const snap = subs[this.selection.index];
       if (snap && snap.status === "running") this.view.requestAbort(snap.id);
       return;
     }
@@ -186,8 +214,8 @@ class SubagentDashboard implements Component {
 
   render(width: number): string[] {
     const theme = this.theme;
-    this.clampSelection();
     const subs = this.subs();
+    reconcileDashboardSelection(this.selection, subs);
 
     const rows = this.tui.terminal.rows || 30;
     // Render exactly terminal rows - 1 so the overlay covers the header,
@@ -263,7 +291,7 @@ class SubagentDashboard implements Component {
     let start = 0;
     if (subs.length > height) {
       start = Math.min(
-        Math.max(0, this.selected - Math.floor(height / 2)),
+        Math.max(0, this.selection.index - Math.floor(height / 2)),
         subs.length - height,
       );
     }
@@ -272,7 +300,7 @@ class SubagentDashboard implements Component {
     for (let i = 0; i < visible.length; i++) {
       const snap = visible[i];
       const index = start + i;
-      const isSelected = index === this.selected;
+      const isSelected = index === this.selection.index;
 
       // Left: marker, status square, title, dim id
       const marker = isSelected ? theme.fg("accent", "❯") : " ";
@@ -385,14 +413,22 @@ class TakeoverView implements Component, Focusable {
     }, 50);
   }
 
-  private close() {
-    if (this.closed) return;
+  private cleanup() {
+    if (this.closed) return false;
     this.closed = true;
     this.unsubscribe();
     clearInterval(this.ticker);
     if (this.renderTimer) clearTimeout(this.renderTimer);
     this.renderTimer = undefined;
-    this.done(null);
+    return true;
+  }
+
+  private close() {
+    if (this.cleanup()) this.done(null);
+  }
+
+  dispose(): void {
+    this.cleanup();
   }
 
   handleInput(data: string): void {

@@ -1,0 +1,17 @@
+{
+  "name": "firecrawl-search",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit -p .",
+    "prepare": "effect-tsgo patch"
+  },
+  "dependencies": {
+    "effect": "4.0.0-beta.98",
+    "firecrawl": "4.30.0"
+  },
+  "devDependencies": {
+    "@effect/tsgo": "^0.19.0",
+    "typescript": "^7.0.2"
+  }
+}

@@ -200,6 +200,23 @@ function textInput(text: string) {
   return { type: "text", text, text_elements: [] };
 }
 
+/**
+ * Parse a `thread/tokenUsage/updated` payload into context occupancy.
+ * `tokenUsage.total` accumulates every request in the thread (cached prompt
+ * tokens re-counted per request), so it is a cumulative spend counter — not
+ * occupancy — and treating it as occupancy pinned the gauge at 100%.
+ * `tokenUsage.last` is the most recent request, whose totalTokens is what
+ * codex-rs itself uses as `tokens_in_context_window()`.
+ */
+export function parseThreadTokenUsage(params: unknown) {
+  const usage = record(record(params)?.tokenUsage);
+  const last = record(usage?.last);
+  return {
+    tokens: numberValue(last?.totalTokens),
+    contextWindow: numberValue(usage?.modelContextWindow),
+  };
+}
+
 // --- Item translation --------------------------------------------------------
 
 function fileChangePreview(item: JsonRecord) {
@@ -689,10 +706,7 @@ const makeCodexSession = (
           break;
         }
         case "thread/tokenUsage/updated": {
-          const usage = record(params.tokenUsage);
-          const total = record(usage?.total);
-          const tokens = numberValue(total?.totalTokens);
-          const contextWindow = numberValue(usage?.modelContextWindow);
+          const { tokens, contextWindow } = parseThreadTokenUsage(params);
           if (contextWindow !== undefined) {
             state.meta = { ...state.meta, contextWindow };
             emit({ _tag: "MetaChanged", meta: { contextWindow } });

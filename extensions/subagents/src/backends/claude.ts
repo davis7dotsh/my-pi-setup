@@ -225,16 +225,34 @@ function sessionFilePath(cwd: string, sessionId: string) {
   );
 }
 
-function usageTokens(result: SDKResultMessage) {
-  const usage = result.usage;
-  // The SDK exposes split input/cache/output counts, not a direct occupancy.
-  // Their sum is the best consistent context-load proxy available at result
-  // time (though multi-tool runs can count reused context more than once).
+/**
+ * Context occupancy after one API request. An assistant message's `usage`
+ * describes only that request: the full prompt (fresh + cache-read +
+ * cache-written input) plus this response's output — exactly what now sits
+ * in the context window. The result message's `usage` instead sums these
+ * per-request counts across the whole run, so a multi-request turn
+ * re-counts cached context once per request and quickly exceeds the real
+ * window; it must never be treated as occupancy.
+ */
+export function contextOccupancyTokens(
+  usage:
+    | {
+        input_tokens?: number | null;
+        cache_read_input_tokens?: number | null;
+        cache_creation_input_tokens?: number | null;
+        output_tokens?: number | null;
+      }
+    | null
+    | undefined,
+) {
+  if (!usage || typeof usage.input_tokens !== "number") return undefined;
+  const count = (value: number | null | undefined) =>
+    typeof value === "number" && Number.isFinite(value) ? value : 0;
   return (
-    usage.input_tokens +
-    usage.cache_read_input_tokens +
-    usage.cache_creation_input_tokens +
-    usage.output_tokens
+    count(usage.input_tokens) +
+    count(usage.cache_read_input_tokens) +
+    count(usage.cache_creation_input_tokens) +
+    count(usage.output_tokens)
   );
 }
 
@@ -387,6 +405,13 @@ const makeClaudeSession = (
       const parts = assistantParts(message);
       if (parts.length > 0) emit({ _tag: "AssistantMessage", parts });
 
+      // Top-level messages only: subagent (sidechain) requests have their own
+      // context and must not overwrite this conversation's occupancy.
+      if (message.parent_tool_use_id === null) {
+        const tokens = contextOccupancyTokens(message.message.usage);
+        if (tokens !== undefined) emit({ _tag: "UsageChanged", tokens });
+      }
+
       const text = message.message.content
         .filter((block) => block.type === "text")
         .map((block) => block.text)
@@ -430,10 +455,12 @@ const makeClaudeSession = (
     };
 
     const handleResult = (result: SDKResultMessage) => {
+      // result.usage is a whole-run aggregate, not occupancy (see
+      // contextOccupancyTokens); only the capacity is trustworthy here. The
+      // occupancy itself was already emitted by the last assistant message.
       const contextWindow = resultContextWindow(result);
       emit({
         _tag: "UsageChanged",
-        tokens: usageTokens(result),
         contextWindow: contextWindow ?? state.meta.contextWindow,
       });
       if (
@@ -627,7 +654,7 @@ const makeClaudeSession = (
         const interruptAndSettle = (async () => {
           try {
             const receipt = await nativeQuery.interrupt();
-            const hasOwnQueuedMessage = receipt?.still_queued.some((uuid) =>
+            const hasOwnQueuedMessage = receipt?.still_queued?.some((uuid) =>
               state.submittedUuids.has(uuid),
             );
             if (hasOwnQueuedMessage) {

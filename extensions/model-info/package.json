@@ -1,0 +1,13 @@
+{
+  "name": "model-info",
+  "scripts": {
+    "check": "tsc --noEmit -p .",
+    "prepare": "effect-tsgo patch"
+  },
+  "type": "module",
+  "private": true,
+  "devDependencies": {
+    "@effect/tsgo": "^0.19.0",
+    "typescript": "^7.0.2"
+  }
+}
