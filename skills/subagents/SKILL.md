@@ -1,50 +1,69 @@
 ---
 name: subagents
-description: Use the subagents extension to delegate autonomous background work across pi, Claude Code, and Codex harnesses. Load when spawning, choosing models or harnesses, monitoring, waiting for, or cancelling subagents.
+description: invoke this skill when the user asks you to use subagents
 ---
 
 # Subagents
 
-Use subagents for self-contained work that can run independently. Each child is headless, has its own context window, cannot see the parent conversation, cannot ask the user, and cannot spawn subagents or workflows.
+Each subagent is headless, has its own context window, cannot see the parent conversation, cannot ask the user, and cannot spawn subagents or workflows. Give every child a self-contained prompt with paths, constraints, and the expected report.
 
-## Spawn
+## Pi Harness
 
-Call `subagent_spawn` with:
+**Harness:** `pi`
+**Prompt nicknames:** “pi”, “pi agent”, “pi subagent”
+**Best default:** Use when the user does not request another harness. It inherits the parent model and thinking level when `model` or `reasoning_effort` is omitted.
 
-- `prompt`: a complete standalone task. Include context, paths, constraints, and what to report.
-- `name`: a short UI label.
-- `harness`: `pi`, `claude`, or `codex`.
-- `working_dir` (optional): defaults to the parent's cwd.
-- `model` (optional): harness-specific model hint.
-- `reasoning_effort` (optional): `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`.
+Do not use models from the Anthropic provider even if one appears in the model list.
 
-At most four subagents may run concurrently across all harnesses. Spawning is fire-and-forget: continue useful parent work rather than waiting immediately.
+Pi can use any model shown by `pi --list-models`. Prefer `provider/model-id`; a bare model id only works when unambiguous. Common picks in this environment:
 
-## Choose a Harness
+| Model                            | Recommended effort |
+| -------------------------------- | ------------------ |
+| inherited parent model (default) | inherited          |
+| `openai-codex/gpt-5.6-sol`       | `high`             |
+| `openai-codex/gpt-5.6-terra`     | `high`             |
+| `opencode/claude-fable-5`        | `medium`           |
 
-- **`pi`** — Default choice. Runs an in-process pi session and inherits the current model and thinking level when omitted. It loads normal tools, settings, skills, extensions, and trusted project resources. Model hints may be `provider/model-id` or an unambiguous model id.
-- **`claude`** — Use when Claude Code is requested or its agent/tooling is a better fit. Model hints are Claude aliases or model names such as `sonnet` or `opus`. Requires Claude Code to be installed and authenticated.
-- **`codex`** — Use when Codex is requested or its coding workflow is a better fit. Model hints are Codex model slugs. Requires the Codex CLI to be installed and authenticated.
+**Thinking budgets:** `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. These map directly to pi thinking levels.
 
-Reasoning effort is mapped to each harness's native setting: pi thinking level, Claude thinking budget, or the nearest supported Codex effort.
+## Claude Code Harness
 
-## Manage Runs
+**Harness:** `claude`
+**Prompt nicknames:** “claude”, “Claude Code”, “claude agent”, “claude subagent”
+**Best default:** use the latest fable model on high reasoning. Do not default to anything else, if the user does not specify, use fable.
 
-- `subagent_check({ id })`: non-blocking status and recent activity peek.
-- `subagent_list()`: list all tracked runs and their harness/status.
-- `subagent_wait({ ids })`: block until all listed runs settle. Use only when their results are required to proceed.
-- `subagent_cancel({ ids })`: stop active runs; partial transcripts remain available.
-- `/subagents`: open the interactive picker to inspect or take over a run.
+| Model hint | Model               | Recommended effort |
+| ---------- | ------------------- | ------------------ |
+| `fable`    | latest Claude Fable | `high`             |
 
-Completed results are automatically queued back into the parent session unless explicitly collected with `subagent_wait`.
+**Thinking budgets:** `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. The extension maps these to Claude thinking-token budgets: 0, 1,024, 4,096, 10,000, 16,000, 32,000, and 63,999 tokens respectively.
 
-## Prompt Pattern
+Requires Claude Code to be installed and authenticated.
 
-```text
-In <working directory>, do <specific task>.
-Read <relevant files>. Follow <constraints>.
-Do not <out-of-scope actions>.
-Report <findings, changed files, tests, or recommendation>.
-```
+## Codex Harness
 
-Prefer parallel subagents only for independent tasks. Use the `workflow` tool instead when work needs ordered phases, dynamic fan-out, or structured aggregation.
+**Harness:** `codex`
+**Prompt nicknames:** “codex”, “Codex CLI”, “codex agent”, “codex subagent”
+**Best default:** `gpt-5.6-sol` with `high` effort for coding work. Do not use anything other than sol unless the user specifically asks for it.
+
+| Model           | Recommended effort |
+| --------------- | ------------------ |
+| `gpt-5.6-sol`   | `high`             |
+| `gpt-5.6-terra` | `high`             |
+| `gpt-5.6-luna`  | `high`             |
+
+**Thinking budgets accepted by the extension:** `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Codex maps these to the nearest effort supported by the selected model; `off`/`minimal` become `minimal`, while `max` becomes the highest extension-supported Codex effort.
+
+Requires the Codex CLI to be installed and authenticated.
+
+## Spawn and Manage
+
+Call `subagent_spawn` with a complete `prompt`, short `name`, chosen `harness`, and optional `working_dir`, `model`, and `reasoning_effort`. At most four subagents run concurrently.
+
+- `subagent_check({ id })`: peek without blocking.
+- `subagent_list()`: list all runs.
+- `subagent_wait({ ids })`: block only when results are required to proceed.
+- `subagent_cancel({ ids })`: stop runs while preserving partial transcripts.
+- `/subagents`: inspect or take over a run interactively.
+
+Results return automatically. After spawning, continue useful parent work instead of immediately waiting.
