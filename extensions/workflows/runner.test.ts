@@ -7,6 +7,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
+  createFirstResponseWatchdog,
   guardWorkflowChildTools,
   recordToolExecutionTiming,
   transcriptFromMessages,
@@ -177,6 +178,37 @@ test("in-flight aborted tool calls retain start timing without completion", () =
     transcript.some((entry) => entry.role === "toolResult"),
     false,
   );
+});
+
+test("first-response watchdog aborts a silent provider request", async () => {
+  let aborted = false;
+  const watchdog = createFirstResponseWatchdog(
+    async () => {
+      aborted = true;
+    },
+    { timeoutMs: 10, model: "fixture-model" },
+  );
+
+  await assert.rejects(
+    watchdog.waitFor(new Promise<never>(() => {})),
+    /no assistant response event for fixture-model within 10 ms.*stalled/i,
+  );
+  assert.equal(aborted, true);
+});
+
+test("first assistant response disarms the watchdog without limiting the run", async () => {
+  const watchdog = createFirstResponseWatchdog(
+    async () => {
+      throw new Error("watchdog should have been disarmed");
+    },
+    { timeoutMs: 10 },
+  );
+  watchdog.markResponse();
+
+  const result = await watchdog.waitFor(
+    new Promise<string>((resolve) => setTimeout(() => resolve("done"), 20)),
+  );
+  assert.equal(result, "done");
 });
 
 test("workflow children guard structured, normal, and dynamically registered tools", async () => {
