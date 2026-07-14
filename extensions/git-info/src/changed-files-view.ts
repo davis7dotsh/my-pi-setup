@@ -1,14 +1,13 @@
 import { basename } from "node:path";
-import type {
-  ExtensionAPI,
-  ExtensionContext,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   Key,
   matchesKey,
   truncateToWidth,
   visibleWidth,
 } from "@earendil-works/pi-tui";
+import { Effect } from "effect";
+import { runCommand } from "./process.ts";
 
 const DIFF_SCROLL_STEP = 5;
 const MAX_DIFF_LINES = 20_000;
@@ -60,18 +59,10 @@ function cleanDisplayPath(path: string) {
   return path.replace(/[\r\n\t]/g, " ");
 }
 
-async function run(
-  pi: ExtensionAPI,
-  ctx: ExtensionContext,
-  cwd: string,
-  args: string[],
-) {
-  return pi.exec("git", args, { cwd, timeout: 10_000, signal: ctx.signal });
-}
+const run = (cwd: string, args: string[]) =>
+  runCommand("git", args, cwd, 10_000);
 
-async function loadFile(
-  pi: ExtensionAPI,
-  ctx: ExtensionContext,
+const loadFile = Effect.fn("git-info.loadFile")(function* (
   repoRoot: string,
   changedPath: ChangedPath,
   hasHead: boolean,
@@ -100,10 +91,10 @@ async function loadFile(
   const statArguments = useNoIndex
     ? ["diff", "--no-index", "--numstat", "--", "/dev/null", changedPath.path]
     : ["diff", "--numstat", "HEAD", "--", changedPath.path];
-  const [diffResult, statResult] = await Promise.all([
-    run(pi, ctx, repoRoot, diffArguments),
-    run(pi, ctx, repoRoot, statArguments),
-  ]);
+  const [diffResult, statResult] = yield* Effect.all(
+    [run(repoRoot, diffArguments), run(repoRoot, statArguments)],
+    { concurrency: "unbounded" },
+  );
   const stats = parseNumstat(statResult.stdout);
   const allDiffLines = diffResult.stdout.trimEnd().split("\n");
   const diff =
@@ -123,40 +114,37 @@ async function loadFile(
     name: cleanDisplayPath(basename(changedPath.path)),
     path: cleanDisplayPath(changedPath.path),
   } satisfies ChangedFile;
-}
+});
 
-export async function loadChangedFiles(
-  pi: ExtensionAPI,
-  ctx: ExtensionContext,
-) {
-  const rootResult = await run(pi, ctx, ctx.cwd, [
-    "rev-parse",
-    "--show-toplevel",
-  ]);
-  if (rootResult.code !== 0) return null;
+export const loadChangedFiles = Effect.fn("git-info.loadChangedFiles")(
+  function* (cwd: string) {
+    const rootResult = yield* run(cwd, ["rev-parse", "--show-toplevel"]);
+    if (rootResult.code !== 0) return null;
 
-  const repoRoot = rootResult.stdout.trim();
-  const [statusResult, headResult] = await Promise.all([
-    run(pi, ctx, repoRoot, [
-      "status",
-      "--porcelain=v1",
-      "-z",
-      "--untracked-files=all",
-    ]),
-    run(pi, ctx, repoRoot, ["rev-parse", "--verify", "HEAD"]),
-  ]);
-  if (statusResult.code !== 0) return null;
-
-  const changedPaths = parseChangedPaths(statusResult.stdout);
-  const files: ChangedFile[] = [];
-  for (const changedPath of changedPaths) {
-    files.push(
-      await loadFile(pi, ctx, repoRoot, changedPath, headResult.code === 0),
+    const repoRoot = rootResult.stdout.trim();
+    const [statusResult, headResult] = yield* Effect.all(
+      [
+        run(repoRoot, [
+          "status",
+          "--porcelain=v1",
+          "-z",
+          "--untracked-files=all",
+        ]),
+        run(repoRoot, ["rev-parse", "--verify", "HEAD"]),
+      ],
+      { concurrency: "unbounded" },
     );
-  }
+    if (statusResult.code !== 0) return null;
 
-  return files;
-}
+    const changedPaths = parseChangedPaths(statusResult.stdout);
+    const files: ChangedFile[] = [];
+    for (const changedPath of changedPaths) {
+      files.push(yield* loadFile(repoRoot, changedPath, headResult.code === 0));
+    }
+
+    return files;
+  },
+);
 
 function padToWidth(text: string, width: number) {
   const truncated = truncateToWidth(text, width, "");

@@ -1,0 +1,18 @@
+{
+  "name": "git-info",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit -p .",
+    "prepare": "effect-tsgo patch",
+    "test": "node --test --experimental-strip-types process.test.ts refresh-coordinator.test.ts"
+  },
+  "devDependencies": {
+    "@effect/tsgo": "^0.19.0",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@effect/platform-node": "4.0.0-beta.98",
+    "effect": "4.0.0-beta.98"
+  }
+}

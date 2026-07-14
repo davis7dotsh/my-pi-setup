@@ -16,6 +16,7 @@ import {
   Text,
   truncateToWidth,
 } from "@earendil-works/pi-tui";
+import { Cause, Effect, Exit } from "effect";
 import { Type, type Static } from "typebox";
 import {
   ASK_USER_PARAMETER_DESCRIPTIONS,
@@ -142,11 +143,27 @@ export default function askUser(pi: ExtensionAPI) {
         { label: "Write my own answer…", isOther: true },
       ];
 
-      const result = await ctx.ui.custom<SelectionResult>(
-        (tui, theme, _kb, done) => {
+      const showQuestion = (uiSignal: AbortSignal) =>
+        ctx.ui.custom<SelectionResult>((tui, theme, _kb, done) => {
           let optionIndex = 0;
           let editMode = false;
           let cachedLines: string[] | undefined;
+
+          let settled = false;
+
+          function finish(result: SelectionResult) {
+            if (settled) return;
+            settled = true;
+            uiSignal.removeEventListener("abort", cancel);
+            done(result);
+          }
+
+          function cancel() {
+            finish(null);
+          }
+
+          uiSignal.addEventListener("abort", cancel, { once: true });
+          if (uiSignal.aborted) queueMicrotask(cancel);
 
           const editorTheme: EditorTheme = {
             borderColor: (s) => theme.fg("accent", s),
@@ -163,7 +180,7 @@ export default function askUser(pi: ExtensionAPI) {
           editor.onSubmit = (value) => {
             const trimmed = value.trim();
             if (trimmed) {
-              done({ answer: trimmed, wasCustom: true });
+              finish({ answer: trimmed, wasCustom: true });
             } else {
               editMode = false;
               editor.setText("");
@@ -183,7 +200,7 @@ export default function askUser(pi: ExtensionAPI) {
               editMode = true;
               refresh();
             } else {
-              done({
+              finish({
                 answer: selected.label,
                 wasCustom: false,
                 index: index + 1,
@@ -232,7 +249,7 @@ export default function askUser(pi: ExtensionAPI) {
             }
 
             if (matchesKey(data, Key.escape)) {
-              done(null);
+              finish(null);
             }
           }
 
@@ -306,9 +323,26 @@ export default function askUser(pi: ExtensionAPI) {
               cachedLines = undefined;
             },
             handleInput,
+            dispose: () => {
+              uiSignal.removeEventListener("abort", cancel);
+            },
           };
-        },
+        });
+
+      const uiExit = await Effect.runPromiseExit(
+        Effect.tryPromise(showQuestion),
+        signal ? { signal } : undefined,
       );
+
+      if (Exit.isFailure(uiExit)) {
+        if (Cause.hasInterruptsOnly(uiExit.cause)) {
+          return reply(buildAskUserResultMessage({ kind: "cancelled" }));
+        }
+        const [first] = Cause.prettyErrors(uiExit.cause);
+        throw new Error(first?.message ?? Cause.pretty(uiExit.cause));
+      }
+
+      const result = uiExit.value;
 
       if (!result) {
         return reply(buildAskUserResultMessage({ kind: "dismissed" }));

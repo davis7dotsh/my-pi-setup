@@ -12,7 +12,8 @@ import {
   type AgentToolUpdateCallback,
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
-import { Firecrawl } from "firecrawl";
+import { Cause, Data, Effect, Exit } from "effect";
+import { Firecrawl, type CrawlJob, type CrawlOptions } from "firecrawl";
 import { Type } from "typebox";
 import {
   CRAWL_PARAMETER_DESCRIPTIONS,
@@ -64,68 +65,170 @@ function readEnvValue(name: string) {
   return undefined;
 }
 
+class MissingApiKeyError extends Data.TaggedError("MissingApiKeyError")<{
+  readonly message: string;
+}> {}
+
 function createClient() {
   const apiKey = readEnvValue("FIRECRAWL_API_KEY");
   if (!apiKey) {
-    throw new Error(
-      "Missing FIRECRAWL_API_KEY in the environment or ~/.pi/agent/.env",
+    return Effect.fail(
+      new MissingApiKeyError({
+        message:
+          "Missing FIRECRAWL_API_KEY in the environment or ~/.pi/agent/.env",
+      }),
     );
   }
 
-  return new Firecrawl({ apiKey });
+  return Effect.try({
+    try: () => new Firecrawl({ apiKey }),
+    catch: (cause) =>
+      new FirecrawlError({ message: errorMessage(cause), cause }),
+  });
 }
 
 function stringify(value: unknown) {
   return JSON.stringify(value, null, 2);
 }
 
-function checkCancellation(signal: AbortSignal | undefined) {
-  if (signal?.aborted) throw new Error("Firecrawl request cancelled");
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
 }
 
-async function formatOutput(value: unknown, operation: string) {
-  const output = typeof value === "string" ? value : stringify(value);
-  const truncation = truncateHead(output, {
-    maxBytes: DEFAULT_MAX_BYTES,
-    maxLines: DEFAULT_MAX_LINES,
+class FirecrawlError extends Data.TaggedError("FirecrawlError")<{
+  readonly message: string;
+  readonly cause: unknown;
+}> {}
+
+function firecrawlRequest<T>(request: () => Promise<T>) {
+  return Effect.tryPromise({
+    try: request,
+    catch: (cause) =>
+      new FirecrawlError({ message: errorMessage(cause), cause }),
   });
-  if (!truncation.truncated) return output;
-
-  const outputDirectory = await mkdtemp(join(tmpdir(), "pi-firecrawl-"));
-  const outputPath = join(outputDirectory, `${operation}.json`);
-  await writeFile(outputPath, output, "utf8");
-
-  return `${truncation.content}\n\n[Output truncated: ${truncation.outputLines} of ${truncation.totalLines} lines (${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)}). Full output saved to: ${outputPath}]`;
 }
 
-/** Shared execute pipeline: cancellation, progress update, request, truncation, errors. */
+class OutputError extends Data.TaggedError("OutputError")<{
+  readonly message: string;
+  readonly cause: unknown;
+}> {}
+
+function formatOutput(value: unknown, operation: string) {
+  return Effect.tryPromise({
+    try: async () => {
+      const output = typeof value === "string" ? value : stringify(value);
+      const truncation = truncateHead(output, {
+        maxBytes: DEFAULT_MAX_BYTES,
+        maxLines: DEFAULT_MAX_LINES,
+      });
+      if (!truncation.truncated) return output;
+
+      const outputDirectory = await mkdtemp(join(tmpdir(), "pi-firecrawl-"));
+      const outputPath = join(outputDirectory, `${operation}.json`);
+      await writeFile(outputPath, output, "utf8");
+
+      return `${truncation.content}\n\n[Output truncated: ${truncation.outputLines} of ${truncation.totalLines} lines (${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)}). Full output saved to: ${outputPath}]`;
+    },
+    catch: (cause) => new OutputError({ message: errorMessage(cause), cause }),
+  });
+}
+
+export type CrawlClient = Pick<
+  Firecrawl,
+  "startCrawl" | "getCrawlStatus" | "cancelCrawl"
+>;
+
+function pollCrawl(
+  client: CrawlClient,
+  jobId: string,
+): Effect.Effect<CrawlJob, FirecrawlError> {
+  return firecrawlRequest(() => client.getCrawlStatus(jobId)).pipe(
+    Effect.flatMap((job) =>
+      job.status === "scraping"
+        ? Effect.sleep("2 seconds").pipe(
+            Effect.flatMap(() =>
+              Effect.suspend(() => pollCrawl(client, jobId)),
+            ),
+          )
+        : Effect.succeed(job),
+    ),
+  );
+}
+
+/** Brackets the remote job so every non-successful exit attempts cancellation. */
+export function crawlEffect(
+  client: CrawlClient,
+  url: string,
+  options: CrawlOptions,
+) {
+  return Effect.acquireUseRelease(
+    firecrawlRequest(() => client.startCrawl(url, options)),
+    (job) => pollCrawl(client, job.id),
+    (job, exit) =>
+      Exit.isSuccess(exit)
+        ? Effect.void
+        : firecrawlRequest(() => client.cancelCrawl(job.id)).pipe(
+            Effect.timeout("10 seconds"),
+            Effect.ignore,
+          ),
+  );
+}
+
+function operationError(operation: string, error: unknown) {
+  if (error instanceof MissingApiKeyError) return new Error(error.message);
+
+  const cause =
+    error instanceof FirecrawlError || error instanceof OutputError
+      ? error.cause
+      : error;
+  return new Error(`Firecrawl ${operation} failed: ${errorMessage(error)}`, {
+    cause,
+  });
+}
+
+/** Shared Effect pipeline with a single Promise boundary for the tool API. */
 async function runFirecrawl<T>(
   operation: string,
   status: string,
+  timeout: number,
   signal: AbortSignal | undefined,
   onUpdate: AgentToolUpdateCallback<T | undefined> | undefined,
-  request: (client: Firecrawl) => Promise<{ details: T; output: unknown }>,
-): Promise<AgentToolResult<T | undefined>> {
-  try {
-    checkCancellation(signal);
-    onUpdate?.({
-      content: [{ type: "text", text: status }],
-      details: undefined,
-    });
+  request: (
+    client: Firecrawl,
+  ) => Effect.Effect<
+    { details: T; output: unknown },
+    FirecrawlError | OutputError
+  >,
+) {
+  const program = Effect.gen(function* () {
+    const client = yield* createClient();
+    yield* Effect.sync(() =>
+      onUpdate?.({
+        content: [{ type: "text", text: status }],
+        details: undefined,
+      }),
+    );
 
-    const { details, output } = await request(createClient());
-    checkCancellation(signal);
+    const { details, output } = yield* request(client).pipe(
+      Effect.timeout(timeout),
+    );
+    const formatted = yield* formatOutput(output, operation);
 
     return {
-      content: [{ type: "text", text: await formatOutput(output, operation) }],
+      content: [{ type: "text" as const, text: formatted }],
       details,
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Firecrawl ${operation} failed: ${message}`, {
-      cause: error,
-    });
+    } satisfies AgentToolResult<T | undefined>;
+  });
+
+  const exit = await Effect.runPromiseExit(
+    program,
+    signal ? { signal } : undefined,
+  );
+  if (Exit.isSuccess(exit)) return exit.value;
+  if (Cause.hasInterruptsOnly(exit.cause)) {
+    throw new Error("Firecrawl request cancelled");
   }
+  throw operationError(operation, Cause.squash(exit.cause));
 }
 
 export default function firecrawlTools(pi: ExtensionAPI) {
@@ -157,19 +260,20 @@ export default function firecrawlTools(pi: ExtensionAPI) {
       runFirecrawl(
         "search",
         `Searching Firecrawl for: ${params.query}`,
+        35_000,
         signal,
         onUpdate,
-        async (client) => {
-          const result = await client.search(params.query, {
-            limit: params.limit ?? 5,
-            sources: [params.source ?? "web"],
-            scrapeOptions: params.scrapeResults
-              ? { formats: ["markdown"], timeout: 30_000 }
-              : undefined,
-            timeout: 30_000,
-          });
-          return { details: result, output: result };
-        },
+        (client) =>
+          firecrawlRequest(() =>
+            client.search(params.query, {
+              limit: params.limit ?? 5,
+              sources: [params.source ?? "web"],
+              scrapeOptions: params.scrapeResults
+                ? { formats: ["markdown"], timeout: 30_000 }
+                : undefined,
+              timeout: 30_000,
+            }),
+          ).pipe(Effect.map((result) => ({ details: result, output: result }))),
       ),
   });
 
@@ -232,10 +336,11 @@ export default function firecrawlTools(pi: ExtensionAPI) {
       runFirecrawl(
         "crawl",
         `Crawling up to ${params.limit ?? 20} pages from: ${params.url}`,
+        ((params.timeout ?? 120) + 5) * 1_000,
         signal,
         onUpdate,
-        async (client) => {
-          const result = await client.crawl(params.url, {
+        (client) =>
+          crawlEffect(client, params.url, {
             limit: params.limit ?? 20,
             maxDiscoveryDepth: params.maxDiscoveryDepth,
             includePaths: params.includePaths,
@@ -247,11 +352,9 @@ export default function firecrawlTools(pi: ExtensionAPI) {
               formats: ["markdown"],
               onlyMainContent: params.onlyMainContent ?? true,
             },
-            pollInterval: 2,
-            timeout: params.timeout ?? 120,
-          });
-          return { details: result, output: result };
-        },
+          }).pipe(
+            Effect.map((result) => ({ details: result, output: result })),
+          ),
       ),
   });
 
@@ -290,25 +393,39 @@ export default function firecrawlTools(pi: ExtensionAPI) {
       runFirecrawl(
         "scrape",
         `Scraping page with Firecrawl: ${params.url}`,
+        (params.timeout ?? 30_000) + 5_000,
         signal,
         onUpdate,
-        async (client) => {
-          const document = await client.scrape(params.url, {
-            formats: ["markdown"],
-            onlyMainContent: params.onlyMainContent ?? true,
-            waitFor: params.waitFor,
-            timeout: params.timeout ?? 30_000,
-          });
+        (client) =>
+          firecrawlRequest(() =>
+            client.scrape(params.url, {
+              formats: ["markdown"],
+              onlyMainContent: params.onlyMainContent ?? true,
+              waitFor: params.waitFor,
+              timeout: params.timeout ?? 30_000,
+            }),
+          ).pipe(
+            Effect.flatMap((document) =>
+              Effect.try({
+                try: () => {
+                  const metadata =
+                    params.includeMetadata && document.metadata
+                      ? `\n\nMetadata:\n${stringify(document.metadata)}`
+                      : "";
+                  const markdown =
+                    document.markdown?.trim() ||
+                    "No markdown content returned.";
 
-          const metadata =
-            params.includeMetadata && document.metadata
-              ? `\n\nMetadata:\n${stringify(document.metadata)}`
-              : "";
-          const markdown =
-            document.markdown?.trim() || "No markdown content returned.";
-
-          return { details: document, output: `${markdown}${metadata}` };
-        },
+                  return {
+                    details: document,
+                    output: `${markdown}${metadata}`,
+                  };
+                },
+                catch: (cause) =>
+                  new OutputError({ message: errorMessage(cause), cause }),
+              }),
+            ),
+          ),
       ),
   });
 }

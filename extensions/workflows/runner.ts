@@ -40,6 +40,7 @@ import {
 import { safeStringify, truncateUtf8 } from "./serialization.ts";
 
 const AGENT_OUTPUT_MAX_BYTES = 64 * 1024;
+export const FIRST_RESPONSE_TIMEOUT_MS = 45_000;
 const TRANSCRIPT_ENTRY_MAX_BYTES = 16 * 1024;
 const TRANSCRIPT_TOTAL_MAX_BYTES = 256 * 1024;
 const TRANSCRIPT_MAX_ENTRIES = 200;
@@ -93,6 +94,8 @@ export interface RunAgentOptions {
   onProgress?: (progress: AgentProgress) => void;
   /** Test-only override for the per-tool execution timeout. */
   toolCallTimeoutMs?: number;
+  /** Test-only override for the first assistant response-event timeout. */
+  firstResponseTimeoutMs?: number;
 }
 
 /** Build a fresh extension runtime for each concurrent workflow child. */
@@ -370,6 +373,59 @@ function errorText(error: unknown): string {
   );
 }
 
+function formatTimeout(timeoutMs: number) {
+  return timeoutMs % 1_000 === 0
+    ? `${timeoutMs / 1_000} seconds`
+    : `${timeoutMs} ms`;
+}
+
+/** Abort a provider call that opens but never emits its first assistant event. */
+export function createFirstResponseWatchdog(
+  onTimeout: () => Promise<unknown>,
+  options: { timeoutMs?: number; model?: string } = {},
+) {
+  const timeoutMs = options.timeoutMs ?? FIRST_RESPONSE_TIMEOUT_MS;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      timer = undefined;
+      const model = options.model ? ` for ${options.model}` : "";
+      reject(
+        new Error(
+          `Agent received no assistant response event${model} within ${formatTimeout(timeoutMs)}; the provider request may be stalled. Retry the workflow.`,
+        ),
+      );
+      void onTimeout().catch(() => {});
+    }, timeoutMs);
+    timer.unref?.();
+  });
+
+  const cancel = () => {
+    if (timer) clearTimeout(timer);
+    timer = undefined;
+  };
+
+  return {
+    markResponse: cancel,
+    async waitFor<T>(operation: Promise<T>) {
+      try {
+        return await Promise.race([operation, timeout]);
+      } finally {
+        cancel();
+      }
+    },
+  };
+}
+
+function isAssistantResponseEvent(event: AgentSessionEvent) {
+  return (
+    (event.type === "message_start" ||
+      event.type === "message_update" ||
+      event.type === "message_end") &&
+    event.message.role === "assistant"
+  );
+}
+
 export async function runAgent(
   options: RunAgentOptions,
 ): Promise<AgentOutcome> {
@@ -474,7 +530,9 @@ export async function runAgent(
     }
   };
 
+  let markFirstResponse = () => {};
   const unsubscribe = childSession.subscribe((event) => {
+    if (isAssistantResponseEvent(event)) markFirstResponse();
     if (
       event.type === "tool_execution_start" ||
       event.type === "tool_execution_end"
@@ -510,8 +568,16 @@ export async function runAgent(
   let output = "";
   let transcript: TranscriptEntry[] = [];
   try {
-    if (!aborted)
-      await childSession.prompt(buildWorkflowAgentPrompt(options.prompt));
+    if (!aborted) {
+      const watchdog = createFirstResponseWatchdog(() => childSession.abort(), {
+        timeoutMs: options.firstResponseTimeoutMs,
+        model: modelId,
+      });
+      markFirstResponse = watchdog.markResponse;
+      await watchdog.waitFor(
+        childSession.prompt(buildWorkflowAgentPrompt(options.prompt)),
+      );
+    }
   } catch (error) {
     errorMessage = errorMessage ?? errorText(error);
     stopReason = stopReason ?? "error";
