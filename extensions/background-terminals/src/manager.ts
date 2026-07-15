@@ -37,6 +37,7 @@ import { OutputBuffer } from "./output.ts";
 
 export const MAX_RUNNING = 8;
 export const MAX_TRACKED = 32;
+const MAX_SETTLED_HISTORY = MAX_TRACKED * 4;
 /** In-memory retained cap per stream; the spill file keeps the full capture. */
 export const RETAINED_PER_STREAM = 2 * 1024 * 1024;
 const STOP_TIMEOUT_MS = 5_000;
@@ -189,6 +190,14 @@ function killTree(child: ChildProcess, signal: NodeJS.Signals) {
         { stdio: "ignore", windowsHide: true },
       );
       killer.once("error", () => {
+        try {
+          child.kill(signal);
+        } catch {
+          // Process may already be gone.
+        }
+      });
+      killer.once("exit", (code) => {
+        if (code === 0) return;
         try {
           child.kill(signal);
         } catch {
@@ -383,6 +392,11 @@ const makeManager = Effect.gen(function* () {
       status: s.status,
       exit: formatExit(s),
     });
+    while (settledHistory.size > MAX_SETTLED_HISTORY) {
+      const oldest = settledHistory.keys().next().value;
+      if (oldest === undefined) break;
+      settledHistory.delete(oldest);
+    }
     // Completing the Deferred can immediately resume kill waiters, whose
     // ensuring blocks release interest. Snapshot consumption first so the
     // settle hook observes the interest that existed when settlement won.

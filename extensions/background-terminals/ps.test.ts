@@ -41,6 +41,9 @@ test("sanitizeText strips ANSI, tabs, and control characters", () => {
     sanitizeText("\u001b]8;;https://example.com\u001b\\link\u001b]8;;\u001b\\"),
     "link",
   );
+  assert.equal(sanitizeText("\u001b]0;title\u009coutput"), "output");
+  assert.equal(sanitizeText("\u009d0;title\u0007output"), "output");
+  assert.equal(sanitizeText("a\u0085b"), "ab");
   assert.equal(sanitizeText("a\tb"), "a  b");
   assert.equal(sanitizeText("a\u0007b\u0000c"), "abc");
 });
@@ -64,6 +67,9 @@ test("output line cache reuses a version/width key and invalidates either dimens
 test("buildOutputLines wraps long lines and keeps only the final CR segment", () => {
   const lines = buildOutputLines("progress 1\rprogress 2\rdone\nnext", 80);
   assert.deepEqual(lines, ["done", "next"]);
+  assert.deepEqual(buildOutputLines("progress 1\rprogress 2\r", 80), [
+    "progress 2",
+  ]);
 
   const wrapped = buildOutputLines("x".repeat(25), 10);
   assert.ok(wrapped.length > 1);

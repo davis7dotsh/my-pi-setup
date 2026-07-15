@@ -434,7 +434,7 @@ reason). Resolution:
 - **Spill-to-disk for the full capture** (this is what makes "full stdout/stderr" true even
   past the cap): create the shared/session directories with owner-only `0700` permissions,
   then open two `0600` append-mode `WriteStream`s under
-  `path.join(os.tmpdir(), "pi-background-terminals", sessionId, `${id}.stdout.log`)` (and
+  ``path.join(os.tmpdir(), "pi-background-terminals", sessionId, `${id}.stdout.log`)`` (and
   `.stderr.log`). A `WriteStream` serializes writes per stream; settlement ends and awaits
   both streams behind a bounded flush barrier before publishing the result. A stream error or
   flush timeout clears the affected full-log pointer and surfaces a bounded `errorText` note.

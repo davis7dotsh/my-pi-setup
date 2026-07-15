@@ -12,7 +12,7 @@ import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 // visible text after only the leading ESC byte is removed.
 // eslint-disable-next-line no-control-regex
 const OSC_PATTERN =
-  /\u001b\](?:[^\u0007\u001b]|\u001b(?!\\))*(?:\u0007|\u001b\\)/g;
+  /(?:\u001b\]|\u009d)(?:[^\u0007\u001b\u009c]|\u001b(?!\\))*(?:\u0007|\u001b\\|\u009c)/g;
 // Standards-shaped CSI matcher: parameters are deliberately unbounded; a
 // five-digit cursor movement is still one control sequence, not visible text.
 // eslint-disable-next-line no-control-regex
@@ -32,7 +32,7 @@ export function sanitizeText(text: string) {
     .replace(CSI_PATTERN, "")
     .replace(ESCAPE_PATTERN, "")
     .replaceAll("\t", "  ")
-    .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "");
+    .replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "");
 }
 
 /** Split, sanitize, and wrap a stream's text into display lines. */
@@ -41,7 +41,10 @@ export function buildOutputLines(text: string, width: number) {
   const out: string[] = [];
   for (const raw of text.split("\n")) {
     // Carriage-return progress lines (npm, cargo): keep only the final state.
-    const lastSegment = raw.split("\r").at(-1) ?? "";
+    const segments = raw.split("\r");
+    const finalSegment = segments.at(-1) ?? "";
+    const lastSegment =
+      finalSegment || [...segments].reverse().find((segment) => segment) || "";
     const clean = sanitizeText(lastSegment);
     if (clean.length === 0) {
       out.push("");
