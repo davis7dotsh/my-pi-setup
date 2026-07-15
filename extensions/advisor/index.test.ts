@@ -3,7 +3,12 @@ import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { loadConfig, processAdvisorResponse, saveConfig } from "./index.ts";
+import {
+  loadConfig,
+  processAdvisorResponse,
+  resetConfig,
+  saveConfig,
+} from "./index.ts";
 
 async function withTemporaryConfig(run: (path: string) => Promise<void>) {
   const directory = await mkdtemp(join(tmpdir(), "pi-advisor-test-"));
@@ -50,6 +55,21 @@ test("concurrent saves leave one complete configuration and no temporary files",
       ),
     );
     assert.deepEqual(await readdir(join(path, "..")), ["advisor.json"]);
+  });
+});
+
+test("reset waits for an earlier save before clearing the configuration", async () => {
+  await withTemporaryConfig(async (path) => {
+    const saving = saveConfig(
+      { provider: "anthropic", model: "claude-opus" },
+      path,
+    );
+    const resetting = resetConfig(path);
+
+    await Promise.all([saving, resetting]);
+
+    assert.equal(await loadConfig(path), undefined);
+    assert.deepEqual(await readdir(join(path, "..")), []);
   });
 });
 

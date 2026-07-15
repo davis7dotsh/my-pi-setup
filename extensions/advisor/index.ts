@@ -9,6 +9,7 @@ import {
   ModelSelectorComponent,
   SettingsManager,
   truncateHead,
+  withFileMutationQueue,
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -68,23 +69,39 @@ export async function loadConfig(path = configPath) {
 }
 
 export async function saveConfig(config: AdvisorConfig, path = configPath) {
-  await mkdir(dirname(path), { recursive: true });
-  const temporaryPath = `${path}.${process.pid}-${randomUUID()}.tmp`;
-  try {
-    await writeFile(temporaryPath, `${JSON.stringify(config, null, "\t")}\n`, {
-      encoding: "utf8",
-      flag: "wx",
-    });
-    await rename(temporaryPath, path);
-  } catch (error) {
-    // Cleanup is best-effort so it cannot hide the original write or rename failure.
+  return withFileMutationQueue(path, async () => {
+    await mkdir(dirname(path), { recursive: true });
+    const temporaryPath = `${path}.${process.pid}-${randomUUID()}.tmp`;
     try {
-      await unlink(temporaryPath);
-    } catch {
-      // Nothing else to do with a temporary file that could not be removed.
+      await writeFile(
+        temporaryPath,
+        `${JSON.stringify(config, null, "\t")}\n`,
+        {
+          encoding: "utf8",
+          flag: "wx",
+        },
+      );
+      await rename(temporaryPath, path);
+    } catch (error) {
+      // Cleanup is best-effort so it cannot hide the original write or rename failure.
+      try {
+        await unlink(temporaryPath);
+      } catch {
+        // Nothing else to do with a temporary file that could not be removed.
+      }
+      throw error;
     }
-    throw error;
-  }
+  });
+}
+
+export async function resetConfig(path = configPath) {
+  return withFileMutationQueue(path, async () => {
+    try {
+      await unlink(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  });
 }
 
 function modelName(model: Model<Api>) {
@@ -163,11 +180,7 @@ export default function advisorExtension(pi: ExtensionAPI) {
       }
 
       if (command === "reset") {
-        try {
-          await unlink(configPath);
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        }
+        await resetConfig();
         ctx.ui.notify("Advisor configuration cleared", "info");
         return;
       }
