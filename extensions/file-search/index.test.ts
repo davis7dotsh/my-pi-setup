@@ -22,7 +22,7 @@ import {
   type ResolvedBinary,
 } from "./src/binaries.ts";
 import { formatOutput } from "./src/output.ts";
-import { awaitWithSignal, installNotifications } from "./index.ts";
+import { installNotifications } from "./index.ts";
 
 // --- argument construction -------------------------------------------------
 
@@ -307,18 +307,6 @@ test("notifications: only fresh installs notify", () => {
   const messages = installNotifications([system, installed]);
   assert.equal(messages.length, 1);
   assert.match(messages[0], /downloaded rg 15\.2\.0/);
-});
-
-test("a caller can stop waiting for shared binary initialization", async () => {
-  const controller = new AbortController();
-  const sharedInitialization = new Promise<string>(() => {});
-  const waiting = awaitWithSignal(
-    sharedInitialization,
-    controller.signal,
-    "setup cancelled",
-  );
-  controller.abort();
-  await assert.rejects(waiting, /setup cancelled/);
 });
 
 // --- output truncation -------------------------------------------------------

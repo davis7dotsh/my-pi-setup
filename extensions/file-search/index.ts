@@ -86,31 +86,26 @@ export interface RgToolDetails {
 
 const EXEC_TIMEOUT_MS = 60_000;
 
-/** Let one caller stop waiting without cancelling shared startup initialization. */
-export function awaitWithSignal<T>(
-  promise: Promise<T>,
-  signal: AbortSignal | undefined,
-  message: string,
-) {
-  if (!signal) return promise;
-  if (signal.aborted) return Promise.reject(new Error(message));
+function causeMessage<E>(cause: Cause.Cause<E>) {
+  const [first] = Cause.prettyErrors(cause);
+  return first?.message ?? Cause.pretty(cause);
+}
 
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => {
-      signal.removeEventListener("abort", onAbort);
-      reject(new Error(message));
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(
-      (value) => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(value);
-      },
-      (error: unknown) => {
-        signal.removeEventListener("abort", onAbort);
-        reject(error instanceof Error ? error : new Error(String(error)));
-      },
-    );
+function unwrapToolExit<A, E>(exit: Exit.Exit<A, E>, tool: "fd" | "rg") {
+  if (Exit.isSuccess(exit)) return exit.value;
+  if (Cause.hasInterruptsOnly(exit.cause)) {
+    throw new Error(`${tool} search was cancelled.`);
+  }
+  throw new Error(causeMessage(exit.cause));
+}
+
+function formatOutputEffect(output: string, tempPrefix: string) {
+  return Effect.tryPromise({
+    try: () => formatOutput(output, { tempPrefix }),
+    catch: (cause) =>
+      new SearchError({
+        message: `Could not format search output: ${cause instanceof Error ? cause.message : String(cause)}`,
+      }),
   });
 }
 
@@ -149,79 +144,58 @@ export default function fileSearchTools(pi: ExtensionAPI) {
 
     if (Exit.isFailure(exit) && ctx.hasUI && !notified) {
       notified = true;
-      const [first] = Cause.prettyErrors(exit.cause);
       ctx.ui.notify(
-        `file-search setup failed: ${first?.message ?? Cause.pretty(exit.cause)}`,
+        `file-search setup failed: ${causeMessage(exit.cause)}`,
         "error",
       );
     }
   });
 
   /** Await init, run the binary via pi.exec with argument arrays, classify exit. */
-  async function runSearch(
-    tool: "fd" | "rg",
-    args: string[],
-    signal: AbortSignal | undefined,
-    ctx: ExtensionContext,
-  ) {
-    const state = await awaitWithSignal(
-      Effect.runPromise(ensureInitialized),
-      signal,
-      `${tool} search was cancelled during setup.`,
-    );
-    const binary = state[tool];
+  function runSearch(tool: "fd" | "rg", args: string[], ctx: ExtensionContext) {
+    return Effect.gen(function* () {
+      const state = yield* ensureInitialized;
+      const binary = state[tool];
+      const result = yield* Effect.tryPromise({
+        try: (signal) =>
+          pi.exec(binary.command, args, {
+            cwd: ctx.cwd,
+            signal,
+          }),
+        catch: (cause) =>
+          new SearchError({
+            message: cause instanceof Error ? cause.message : String(cause),
+          }),
+      }).pipe(
+        Effect.timeout(EXEC_TIMEOUT_MS),
+        Effect.mapError((error) =>
+          error._tag === "TimeoutError"
+            ? new SearchError({ message: `${tool} timed out.` })
+            : error,
+        ),
+      );
 
-    const binarySource = binary.source;
-    const program = Effect.tryPromise({
-      try: (execSignal) =>
-        pi.exec(binary.command, args, {
-          cwd: ctx.cwd,
-          signal: execSignal,
-          timeout: EXEC_TIMEOUT_MS,
-        }),
-      catch: (cause) =>
-        new SearchError({
-          message: cause instanceof Error ? cause.message : String(cause),
-        }),
-    }).pipe(
-      Effect.flatMap((result) => {
-        if (result.killed) {
-          return Effect.fail(
-            new SearchError({ message: `${tool} was cancelled or timed out.` }),
-          );
-        }
-        // ripgrep exits 1 for "no matches"; fd exits 0 even with no results.
-        if (tool === "rg" && result.code === 1 && !result.stdout.trim()) {
-          return Effect.succeed<SearchOutcome>({
-            stdout: "",
-            noMatches: true,
-            binarySource,
-          });
-        }
-        if (result.code !== 0) {
-          const detail = result.stderr.trim() || `exit code ${result.code}`;
-          return Effect.fail(
-            new SearchError({ message: `${tool} failed: ${detail}` }),
-          );
-        }
-        return Effect.succeed<SearchOutcome>({
-          stdout: result.stdout,
-          noMatches: !result.stdout.trim(),
-          binarySource,
-        });
-      }),
-    );
-
-    const exit = await Effect.runPromiseExit(
-      program,
-      signal ? { signal } : undefined,
-    );
-    if (Exit.isSuccess(exit)) return exit.value;
-    if (Cause.hasInterruptsOnly(exit.cause)) {
-      throw new Error(`${tool} search was cancelled.`);
-    }
-    const [first] = Cause.prettyErrors(exit.cause);
-    throw new Error(first?.message ?? Cause.pretty(exit.cause));
+      if (result.killed) {
+        return yield* new SearchError({ message: `${tool} was cancelled.` });
+      }
+      // ripgrep exits 1 for "no matches"; fd exits 0 even with no results.
+      if (tool === "rg" && result.code === 1 && !result.stdout.trim()) {
+        return {
+          stdout: "",
+          noMatches: true,
+          binarySource: binary.source,
+        } satisfies SearchOutcome;
+      }
+      if (result.code !== 0) {
+        const detail = result.stderr.trim() || `exit code ${result.code}`;
+        return yield* new SearchError({ message: `${tool} failed: ${detail}` });
+      }
+      return {
+        stdout: result.stdout,
+        noMatches: !result.stdout.trim(),
+        binarySource: binary.source,
+      } satisfies SearchOutcome;
+    });
   }
 
   pi.registerTool<ReturnType<typeof fdParameters>, FdToolDetails>({
@@ -233,31 +207,34 @@ export default function fileSearchTools(pi: ExtensionAPI) {
     parameters: fdParameters(),
 
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const outcome = await runSearch("fd", buildFdArgs(params), signal, ctx);
+      const exit = await Effect.runPromiseExit(
+        Effect.gen(function* () {
+          const outcome = yield* runSearch("fd", buildFdArgs(params), ctx);
+          if (outcome.noMatches) {
+            return {
+              content: [{ type: "text", text: "No files found" }],
+              details: {
+                binarySource: outcome.binarySource,
+                matchCount: 0,
+                truncated: false,
+              },
+            } satisfies AgentToolResult<FdToolDetails>;
+          }
 
-      if (outcome.noMatches) {
-        return {
-          content: [{ type: "text", text: "No files found" }],
-          details: {
-            binarySource: outcome.binarySource,
-            matchCount: 0,
-            truncated: false,
-          },
-        } satisfies AgentToolResult<FdToolDetails>;
-      }
-
-      const formatted = await formatOutput(outcome.stdout, {
-        tempPrefix: "pi-fd-",
-      });
-      return {
-        content: [{ type: "text", text: formatted.text }],
-        details: {
-          binarySource: outcome.binarySource,
-          matchCount: formatted.lineCount,
-          truncated: formatted.truncated,
-          fullOutputPath: formatted.fullOutputPath,
-        },
-      } satisfies AgentToolResult<FdToolDetails>;
+          const formatted = yield* formatOutputEffect(outcome.stdout, "pi-fd-");
+          return {
+            content: [{ type: "text", text: formatted.text }],
+            details: {
+              binarySource: outcome.binarySource,
+              matchCount: formatted.lineCount,
+              truncated: formatted.truncated,
+              fullOutputPath: formatted.fullOutputPath,
+            },
+          } satisfies AgentToolResult<FdToolDetails>;
+        }),
+        signal ? { signal } : undefined,
+      );
+      return unwrapToolExit(exit, "fd");
     },
 
     renderCall(args, theme) {
@@ -301,31 +278,34 @@ export default function fileSearchTools(pi: ExtensionAPI) {
     parameters: rgParameters(),
 
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const outcome = await runSearch("rg", buildRgArgs(params), signal, ctx);
+      const exit = await Effect.runPromiseExit(
+        Effect.gen(function* () {
+          const outcome = yield* runSearch("rg", buildRgArgs(params), ctx);
+          if (outcome.noMatches) {
+            return {
+              content: [{ type: "text", text: "No matches found" }],
+              details: {
+                binarySource: outcome.binarySource,
+                outputLines: 0,
+                truncated: false,
+              },
+            } satisfies AgentToolResult<RgToolDetails>;
+          }
 
-      if (outcome.noMatches) {
-        return {
-          content: [{ type: "text", text: "No matches found" }],
-          details: {
-            binarySource: outcome.binarySource,
-            outputLines: 0,
-            truncated: false,
-          },
-        } satisfies AgentToolResult<RgToolDetails>;
-      }
-
-      const formatted = await formatOutput(outcome.stdout, {
-        tempPrefix: "pi-rg-",
-      });
-      return {
-        content: [{ type: "text", text: formatted.text }],
-        details: {
-          binarySource: outcome.binarySource,
-          outputLines: formatted.lineCount,
-          truncated: formatted.truncated,
-          fullOutputPath: formatted.fullOutputPath,
-        },
-      } satisfies AgentToolResult<RgToolDetails>;
+          const formatted = yield* formatOutputEffect(outcome.stdout, "pi-rg-");
+          return {
+            content: [{ type: "text", text: formatted.text }],
+            details: {
+              binarySource: outcome.binarySource,
+              outputLines: formatted.lineCount,
+              truncated: formatted.truncated,
+              fullOutputPath: formatted.fullOutputPath,
+            },
+          } satisfies AgentToolResult<RgToolDetails>;
+        }),
+        signal ? { signal } : undefined,
+      );
+      return unwrapToolExit(exit, "rg");
     },
 
     renderCall(args, theme) {
