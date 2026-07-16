@@ -90,6 +90,34 @@ export interface RgToolDetails {
 
 const EXEC_TIMEOUT_MS = 60_000;
 
+/** Let one caller stop waiting without cancelling shared startup initialization. */
+export function awaitWithSignal<T>(
+  promise: Promise<T>,
+  signal: AbortSignal | undefined,
+  message: string,
+) {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(new Error(message));
+
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener("abort", onAbort);
+      reject(new Error(message));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+  });
+}
+
 export default function fileSearchTools(pi: ExtensionAPI) {
   let initPromise: Promise<InitState> | undefined;
   let notified = false;
@@ -148,7 +176,11 @@ export default function fileSearchTools(pi: ExtensionAPI) {
     signal: AbortSignal | undefined,
     ctx: ExtensionContext,
   ) {
-    const state = await ensureInitialized();
+    const state = await awaitWithSignal(
+      ensureInitialized(),
+      signal,
+      `${tool} search was cancelled during setup.`,
+    );
     const toolState = state[tool];
     if (!toolState.ok) {
       throw new Error(`The ${tool} tool is unavailable: ${toolState.message}`);
