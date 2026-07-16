@@ -2,6 +2,7 @@ import {
   complete,
   type Api,
   type Model,
+  type ProviderStreamOptions,
   type UserMessage,
 } from "@earendil-works/pi-ai/compat";
 import {
@@ -9,15 +10,18 @@ import {
   ModelSelectorComponent,
   SettingsManager,
   truncateHead,
-  withFileMutationQueue,
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 const configPath = join(getAgentDir(), "extensions", "advisor.json");
+export const ADVISOR_MAX_TOKENS = 16_000;
+export const ADVISOR_TIMEOUT_MS = 3 * 60 * 1_000;
+
+const configMutationQueues = new Map<string, Promise<void>>();
 
 const advisorSystemPrompt = `You are Advisor, an independent read-only consultant for another coding agent.
 
@@ -27,6 +31,27 @@ type AdvisorConfig = {
   provider: string;
   model: string;
 };
+
+function configMutationKey(path: string) {
+  const resolved = resolve(path);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+function withConfigMutationQueue<T>(path: string, operation: () => Promise<T>) {
+  const key = configMutationKey(path);
+  const previous = configMutationQueues.get(key) ?? Promise.resolve();
+  const result = previous.then(operation);
+  const tail = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  configMutationQueues.set(key, tail);
+  return result.finally(() => {
+    if (configMutationQueues.get(key) === tail) {
+      configMutationQueues.delete(key);
+    }
+  });
+}
 
 function isAdvisorConfig(value: unknown): value is AdvisorConfig {
   return (
@@ -69,7 +94,7 @@ export async function loadConfig(path = configPath) {
 }
 
 export async function saveConfig(config: AdvisorConfig, path = configPath) {
-  return withFileMutationQueue(path, async () => {
+  return withConfigMutationQueue(path, async () => {
     await mkdir(dirname(path), { recursive: true });
     const temporaryPath = `${path}.${process.pid}-${randomUUID()}.tmp`;
     try {
@@ -79,6 +104,7 @@ export async function saveConfig(config: AdvisorConfig, path = configPath) {
         {
           encoding: "utf8",
           flag: "wx",
+          mode: 0o600,
         },
       );
       await rename(temporaryPath, path);
@@ -95,7 +121,7 @@ export async function saveConfig(config: AdvisorConfig, path = configPath) {
 }
 
 export async function resetConfig(path = configPath) {
-  return withFileMutationQueue(path, async () => {
+  return withConfigMutationQueue(path, async () => {
     try {
       await unlink(path);
     } catch (error) {
@@ -113,6 +139,11 @@ type AdvisorResponse = Pick<
   "content" | "errorMessage" | "stopReason"
 >;
 
+type AdvisorRequestAuth = Pick<
+  ProviderStreamOptions,
+  "apiKey" | "headers" | "env"
+>;
+
 function textFromResponse(response: AdvisorResponse) {
   return response.content
     .filter(
@@ -122,6 +153,13 @@ function textFromResponse(response: AdvisorResponse) {
     .map((content) => content.text)
     .join("\n")
     .trim();
+}
+
+function truncateUtf8Prefix(value: string, maxBytes: number) {
+  const buffer = Buffer.from(value, "utf8");
+  let end = Math.min(maxBytes, buffer.length);
+  while (end > 0 && (buffer[end] & 0xc0) === 0x80) end--;
+  return buffer.subarray(0, end).toString("utf8");
 }
 
 export function processAdvisorResponse(response: AdvisorResponse) {
@@ -137,6 +175,9 @@ export function processAdvisorResponse(response: AdvisorResponse) {
   const answer = textFromResponse(response);
   if (!answer) throw new Error("Advisor returned no text response");
   const truncation = truncateHead(answer);
+  const truncatedContent = truncation.firstLineExceedsLimit
+    ? truncateUtf8Prefix(answer, truncation.maxBytes)
+    : truncation.content;
   const notices = [
     ...(response.stopReason === "length"
       ? ["[Advisor reached its output limit.]"]
@@ -148,14 +189,80 @@ export function processAdvisorResponse(response: AdvisorResponse) {
   return {
     output:
       notices.length > 0
-        ? `${truncation.content}\n\n${notices.join("\n")}`
-        : truncation.content,
+        ? `${truncatedContent}\n\n${notices.join("\n")}`
+        : truncatedContent,
     stopReason: response.stopReason,
     truncated: truncation.truncated,
   };
 }
 
-export default function advisorExtension(pi: ExtensionAPI) {
+export async function requestAdvisor(
+  model: Model<Api>,
+  params: { question: string; context?: string },
+  auth: AdvisorRequestAuth,
+  signal?: AbortSignal,
+  timeoutMs = ADVISOR_TIMEOUT_MS,
+) {
+  const userMessage: UserMessage = {
+    role: "user",
+    content: [
+      {
+        type: "text",
+        text: `Question:\n${params.question}${params.context ? `\n\nContext:\n${params.context}` : ""}`,
+      },
+    ],
+    timestamp: Date.now(),
+  };
+  const requestController = new AbortController();
+  let timedOut = false;
+  const timeoutDescription =
+    timeoutMs % 60_000 === 0
+      ? `${timeoutMs / 60_000} minute${timeoutMs === 60_000 ? "" : "s"}`
+      : `${timeoutMs} ms`;
+  const timeoutError = new Error(
+    `Advisor request timed out after ${timeoutDescription}`,
+  );
+  const abortFromCaller = () => requestController.abort(signal?.reason);
+  if (signal?.aborted) abortFromCaller();
+  else signal?.addEventListener("abort", abortFromCaller, { once: true });
+
+  let timeout: NodeJS.Timeout | undefined;
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      timedOut = true;
+      requestController.abort(timeoutError);
+      reject(timeoutError);
+    }, timeoutMs);
+  });
+
+  try {
+    const response = await Promise.race([
+      complete(
+        model,
+        { systemPrompt: advisorSystemPrompt, messages: [userMessage] },
+        {
+          ...auth,
+          signal: requestController.signal,
+          maxTokens: Math.min(model.maxTokens, ADVISOR_MAX_TOKENS),
+          timeoutMs,
+        },
+      ),
+      timeoutPromise,
+    ]);
+    return processAdvisorResponse(response);
+  } catch (error) {
+    if (timedOut) throw timeoutError;
+    throw error;
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    signal?.removeEventListener("abort", abortFromCaller);
+  }
+}
+
+export default function advisorExtension(
+  pi: ExtensionAPI,
+  advisorConfigPath = configPath,
+) {
   pi.registerCommand("advisor", {
     description: "Configure the model used by the advisor tool",
     handler: async (args, ctx) => {
@@ -163,7 +270,7 @@ export default function advisorExtension(pi: ExtensionAPI) {
 
       if (command === "status") {
         try {
-          const config = await loadConfig();
+          const config = await loadConfig(advisorConfigPath);
           ctx.ui.notify(
             config
               ? `Advisor: ${config.provider}/${config.model}`
@@ -180,7 +287,7 @@ export default function advisorExtension(pi: ExtensionAPI) {
       }
 
       if (command === "reset") {
-        await resetConfig();
+        await resetConfig(advisorConfigPath);
         ctx.ui.notify("Advisor configuration cleared", "info");
         return;
       }
@@ -207,7 +314,7 @@ export default function advisorExtension(pi: ExtensionAPI) {
           return;
         }
 
-        await saveConfig({ provider, model: modelId });
+        await saveConfig({ provider, model: modelId }, advisorConfigPath);
         ctx.ui.notify(`Advisor set to ${command}`, "info");
         return;
       }
@@ -219,7 +326,7 @@ export default function advisorExtension(pi: ExtensionAPI) {
 
       let config: AdvisorConfig | undefined;
       try {
-        config = await loadConfig();
+        config = await loadConfig(advisorConfigPath);
       } catch (error) {
         ctx.ui.notify(
           error instanceof Error ? error.message : String(error),
@@ -251,7 +358,10 @@ export default function advisorExtension(pi: ExtensionAPI) {
         return;
       }
 
-      await saveConfig({ provider: selected.provider, model: selected.id });
+      await saveConfig(
+        { provider: selected.provider, model: selected.id },
+        advisorConfigPath,
+      );
       ctx.ui.notify(`Advisor set to ${modelName(selected)}`, "info");
     },
   });
@@ -260,11 +370,12 @@ export default function advisorExtension(pi: ExtensionAPI) {
     name: "advisor",
     label: "Advisor",
     description:
-      "Ask the configured read-only advisor model for help with a question. The advisor has no tools and cannot make changes.",
+      "Ask the configured read-only advisor model for help with a question. Only the supplied question and context are sent to that model provider; the advisor has no tools and cannot make changes.",
     promptSnippet:
       "Ask the configured read-only advisor for a second opinion on a difficult question",
     promptGuidelines: [
       "Use advisor only when you are stuck on a question that neither you nor the user can answer. Give advisor the relevant facts and ask one focused question; it cannot inspect files or make changes.",
+      "Never send credentials, tokens, private keys, or other secrets to advisor. Ask the user before including sensitive or proprietary material they did not explicitly authorize sharing with the configured model provider.",
     ],
     parameters: Type.Object({
       question: Type.String({
@@ -281,7 +392,7 @@ export default function advisorExtension(pi: ExtensionAPI) {
       ),
     }),
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
-      const config = await loadConfig();
+      const config = await loadConfig(advisorConfigPath);
       if (!config) {
         throw new Error(
           "Advisor is not configured. The user can choose one with /advisor.",
@@ -305,22 +416,12 @@ export default function advisorExtension(pi: ExtensionAPI) {
         ],
         details: { advisor: modelName(model) },
       });
-      const userMessage: UserMessage = {
-        role: "user",
-        content: [
-          {
-            type: "text",
-            text: `Question:\n${params.question}${params.context ? `\n\nContext:\n${params.context}` : ""}`,
-          },
-        ],
-        timestamp: Date.now(),
-      };
-      const response = await complete(
+      const result = await requestAdvisor(
         model,
-        { systemPrompt: advisorSystemPrompt, messages: [userMessage] },
-        { apiKey: auth.apiKey, headers: auth.headers, env: auth.env, signal },
+        params,
+        { apiKey: auth.apiKey, headers: auth.headers, env: auth.env },
+        signal,
       );
-      const result = processAdvisorResponse(response);
       return {
         content: [{ type: "text", text: result.output }],
         details: {
