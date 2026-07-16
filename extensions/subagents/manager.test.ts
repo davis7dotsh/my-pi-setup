@@ -138,6 +138,66 @@ test("cancel interrupts a running stub subagent", async () => {
   });
 });
 
+test("spawn origin propagates to ids, snapshots, and settlement", async () => {
+  await withManager(async (manager, runtime) => {
+    const settled: Array<{ id: string; origin: string }> = [];
+    manager.view.setOnSettled((snap) =>
+      settled.push({ id: snap.id, origin: snap.origin }),
+    );
+
+    const model = await runTool(
+      runtime,
+      manager.spawn("codex", task("model task")),
+    );
+    const btw = await runTool(
+      runtime,
+      manager.spawn("claude", { ...task("side question"), origin: "btw" }),
+    );
+
+    assert.match(model.id, /^sa-/);
+    assert.equal(model.origin, "model");
+    assert.match(btw.id, /^btw-/);
+    assert.equal(btw.origin, "btw");
+
+    await runTool(runtime, manager.cancel([model.id, btw.id]));
+    assert.deepEqual(
+      settled.sort((a, b) => a.id.localeCompare(b.id)),
+      [
+        { id: btw.id, origin: "btw" },
+        { id: model.id, origin: "model" },
+      ].sort((a, b) => a.id.localeCompare(b.id)),
+    );
+  });
+});
+
+test("the global concurrency cap includes by-the-way sessions", async () => {
+  await withManager(async (manager, runtime) => {
+    const tasks: SpawnTask[] = [
+      { ...task("side question"), origin: "btw" },
+      task("Task 2"),
+      task("Task 3"),
+      task("Task 4"),
+    ];
+    const spawns = await runTool(
+      runtime,
+      Effect.forEach(tasks, (spawnTask) => manager.spawn("codex", spawnTask), {
+        concurrency: "unbounded",
+      }),
+    );
+    assert.equal(spawns.length, 4);
+    await assert.rejects(
+      runTool(
+        runtime,
+        manager.spawn("codex", {
+          ...task("another side question"),
+          origin: "btw",
+        }),
+      ),
+      /Max 4 subagents/,
+    );
+  });
+});
+
 test("the concurrency cap rejects a fifth running subagent", async () => {
   await withManager(async (manager, runtime) => {
     const spawns = await runTool(

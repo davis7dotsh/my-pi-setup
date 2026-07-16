@@ -573,7 +573,9 @@ const makePiSession = (
 
     // Session naming is best-effort.
     yield* Effect.try(() =>
-      session.sessionManager.appendSessionInfo(`subagent: ${task.title}`),
+      session.sessionManager.appendSessionInfo(
+        `${task.origin === "btw" ? "btw" : "subagent"}: ${task.title}`,
+      ),
     ).pipe(Effect.ignore);
 
     emit({ _tag: "MetaChanged", meta: currentMeta() });

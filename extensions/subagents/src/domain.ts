@@ -13,6 +13,9 @@ import { Data } from "effect";
 export const BACKEND_NAMES = ["pi", "claude", "codex"] as const;
 export type BackendName = (typeof BACKEND_NAMES)[number];
 
+/** Who initiated the session. User asides stay out of model-facing tooling. */
+export type SubagentOrigin = "model" | "btw";
+
 /**
  * Shared reasoning-effort scale (pi's thinking levels). Each backend maps a
  * value to its nearest native equivalent: pi uses it directly, codex
@@ -44,6 +47,8 @@ export interface ParentContext {
 }
 
 export interface SpawnTask {
+  /** Omitted for normal tool-driven spawns. */
+  readonly origin?: SubagentOrigin;
   readonly prompt: string;
   readonly title: string;
   readonly cwd: string;
@@ -186,6 +191,7 @@ export type SubagentEvent =
  */
 export interface SubagentSnapshot {
   readonly id: string;
+  readonly origin: SubagentOrigin;
   readonly backend: BackendName;
   readonly title: string;
   readonly prompt: string;

@@ -5,7 +5,7 @@
   "scripts": {
     "check": "tsc --noEmit -p .",
     "prepare": "effect-tsgo patch",
-    "test": "node --test --experimental-strip-types manager.test.ts result-delivery.test.ts context-usage.test.ts takeover.test.ts",
+    "test": "node --test --experimental-strip-types manager.test.ts result-delivery.test.ts context-usage.test.ts takeover.test.ts by-the-way.test.ts",
     "test:live": "node --test --experimental-strip-types claude.test.ts codex.test.ts"
   },
   "dependencies": {
