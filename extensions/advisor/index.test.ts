@@ -143,7 +143,7 @@ test("response processing reports errors, limits, and tool truncation", () => {
     "\n\n[Advisor response truncated by the tool.]",
   );
   assert.ok(retained.length > 0);
-  assert.ok(Buffer.byteLength(retained, "utf8") <= 50 * 1024);
+  assert.ok(Buffer.byteLength(oversizedLine.output, "utf8") <= 50 * 1024);
   assert.equal(retained.includes("�"), false);
   assert.equal(oversizedLine.truncated, true);
 });

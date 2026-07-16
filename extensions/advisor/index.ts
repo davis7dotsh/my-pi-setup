@@ -175,24 +175,51 @@ export function processAdvisorResponse(response: AdvisorResponse) {
   const answer = textFromResponse(response);
   if (!answer) throw new Error("Advisor returned no text response");
   const truncation = truncateHead(answer);
-  const truncatedContent = truncation.firstLineExceedsLimit
-    ? truncateUtf8Prefix(answer, truncation.maxBytes)
-    : truncation.content;
-  const notices = [
-    ...(response.stopReason === "length"
-      ? ["[Advisor reached its output limit.]"]
-      : []),
-    ...(truncation.truncated
-      ? ["[Advisor response truncated by the tool.]"]
-      : []),
-  ];
+  const outputLimitNotice =
+    response.stopReason === "length"
+      ? "[Advisor reached its output limit.]"
+      : undefined;
+  const toolLimitNotice = "[Advisor response truncated by the tool.]";
+  let toolTruncated = truncation.truncated;
+  let notices = [
+    outputLimitNotice,
+    toolTruncated ? toolLimitNotice : undefined,
+  ].filter((notice): notice is string => notice !== undefined);
+  let suffix = notices.length > 0 ? `\n\n${notices.join("\n")}` : "";
+
+  if (
+    !toolTruncated &&
+    Buffer.byteLength(answer, "utf8") + Buffer.byteLength(suffix, "utf8") >
+      truncation.maxBytes
+  ) {
+    toolTruncated = true;
+    notices = [outputLimitNotice, toolLimitNotice].filter(
+      (notice): notice is string => notice !== undefined,
+    );
+    suffix = `\n\n${notices.join("\n")}`;
+  }
+
+  if (notices.length === 0) {
+    return {
+      output: answer,
+      stopReason: response.stopReason,
+      truncated: false,
+    };
+  }
+
+  const contentByteLimit =
+    truncation.maxBytes - Buffer.byteLength(suffix, "utf8");
+  const bounded = truncateHead(answer, {
+    maxBytes: contentByteLimit,
+    maxLines: truncation.maxLines,
+  });
+  const truncatedContent = bounded.firstLineExceedsLimit
+    ? truncateUtf8Prefix(answer, contentByteLimit)
+    : bounded.content;
   return {
-    output:
-      notices.length > 0
-        ? `${truncatedContent}\n\n${notices.join("\n")}`
-        : truncatedContent,
+    output: `${truncatedContent}${suffix}`,
     stopReason: response.stopReason,
-    truncated: truncation.truncated,
+    truncated: toolTruncated,
   };
 }
 
