@@ -9,6 +9,7 @@ This setup is fairly opinionated, it:
 - adds subagents to pi
 - adds workflows to pi
 - adds an ask user tool, which lets the model ask multiple choice questions
+- adds first-class `fd` (file discovery) and `rg` (content search) tools
 
 ![Pi setup interface](assets/pi-setup.jpeg)
 
