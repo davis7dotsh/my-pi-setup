@@ -11,12 +11,12 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@effect/platform-node": "4.0.0-beta.98",
-    "effect": "4.0.0-beta.98"
+    "@effect/platform-node": "^4.0.0-beta.99",
+    "effect": "^4.0.0-beta.99"
   },
   "devDependencies": {
-    "@effect/tsgo": "^0.19.0",
-    "@effect/vitest": "4.0.0-beta.98",
+    "@effect/tsgo": "^0.24.2",
+    "@effect/vitest": "^4.0.0-beta.99",
     "typescript": "^7.0.2",
     "vitest": "4.1.10"
   }
