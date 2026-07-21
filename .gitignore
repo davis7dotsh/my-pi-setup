@@ -11,6 +11,8 @@ auth.json
 settings.json
 trust.json
 models-store.json
+extensions/summaries/config.private.json
+extensions/summaries/config.private.json.*.tmp
 
 # Environment variables and secrets
 .env
