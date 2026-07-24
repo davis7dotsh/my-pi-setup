@@ -16,7 +16,6 @@ import type {
   AgentSession,
   AgentSessionEvent,
   ModelRegistry,
-  ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import {
   createAgentSession,
@@ -35,9 +34,9 @@ import type {
   TranscriptPart,
 } from "../domain.ts";
 import { SendError, SpawnError } from "../domain.ts";
+import { createToolCallTimeoutGuard } from "../../../shared/tool-call-timeout.ts";
 
 const CHILD_SHUTDOWN_TIMEOUT_MS = 5_000;
-const CHILD_TOOL_CALL_TIMEOUT_MS = 3 * 60 * 1_000;
 
 /** Tools that headless children must not receive. Everything else stays enabled. */
 const CHILD_EXCLUDED_TOOL_NAMES = [
@@ -147,63 +146,6 @@ async function shutdownAndDisposeChildSession(session: AgentSession) {
   }
 }
 
-// --- Tool-call timeout guard (ported from v1 shared/tool-call-timeout.ts) -----
-
-/**
- * Wrap every registered child tool with an independent execution timeout so a
- * hung tool cannot wedge a headless child forever. apply() is idempotent and
- * re-applied on agent_start to pick up tools registered between runs.
- */
-function createToolCallTimeoutGuard(timeoutMs = CHILD_TOOL_CALL_TIMEOUT_MS) {
-  const wrapped = new WeakSet<ToolDefinition>();
-
-  const wrap = (definition: ToolDefinition) => {
-    if (wrapped.has(definition)) return;
-    wrapped.add(definition);
-    const execute = definition.execute;
-    definition.execute = async (toolCallId, params, signal, onUpdate, ctx) => {
-      const timeoutController = new AbortController();
-      const executionSignal = signal
-        ? AbortSignal.any([signal, timeoutController.signal])
-        : timeoutController.signal;
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const timeout = new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => {
-          const error = new Error(
-            `Tool call "${definition.name}" timed out after ${Math.round(timeoutMs / 60_000)} minutes.`,
-          );
-          reject(error);
-          timeoutController.abort(error);
-        }, timeoutMs);
-      });
-      try {
-        return await Promise.race([
-          execute.call(
-            definition,
-            toolCallId,
-            params,
-            executionSignal,
-            onUpdate,
-            ctx,
-          ),
-          timeout,
-        ]);
-      } finally {
-        if (timer) clearTimeout(timer);
-      }
-    };
-  };
-
-  return {
-    apply(session: AgentSession) {
-      for (const { name } of session.getAllTools()) {
-        const definition = session.getToolDefinition(name);
-        if (definition) wrap(definition);
-      }
-    },
-  };
-}
-
 // --- Event translation ----------------------------------------------------------
 
 function messageRole(msg: unknown): Message["role"] | undefined {
@@ -243,7 +185,7 @@ function finalOutput(session: AgentSession): string {
 function safeJson(value: unknown): string | undefined {
   try {
     const text = JSON.stringify(value);
-    return text === "{}" ? undefined : text;
+    return text === "{}" ? undefined : text.slice(0, 4_096);
   } catch {
     return undefined;
   }
@@ -348,7 +290,6 @@ const makePiSession = (
           sessionManager: SessionManager.create(task.cwd),
           settingsManager,
           resourceLoader: loader,
-          modelRegistry: registry,
           model,
           thinkingLevel,
           excludeTools: [...CHILD_EXCLUDED_TOOL_NAMES],

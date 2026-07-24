@@ -448,7 +448,6 @@ export async function runAgent(
       ...(options.thinkingLevel
         ? { thinkingLevel: options.thinkingLevel }
         : {}),
-      modelRegistry: options.modelRegistry,
       resourceLoader: options.loader,
       settingsManager: options.settingsManager,
       sessionManager: SessionManager.inMemory(options.cwd),

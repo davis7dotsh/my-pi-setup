@@ -183,7 +183,7 @@ export default function gitInfo(pi: ExtensionAPI) {
     forkBackground(refreshIfIdle(ctx));
   };
 
-  pi.events.on(REFRESH_CHANNEL, () => {
+  const stopRefreshListener = pi.events.on(REFRESH_CHANNEL, () => {
     if (currentContext) refreshInBackground(currentContext);
   });
 
@@ -213,6 +213,7 @@ export default function gitInfo(pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async () => {
+    stopRefreshListener();
     generation += 1;
     currentContext = undefined;
     pollingFiber = undefined;

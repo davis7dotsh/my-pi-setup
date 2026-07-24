@@ -176,7 +176,7 @@ export function runWorkflowSandbox(options: RunWorkflowSandboxOptions) {
       if (raw.kind === "phase") {
         if (
           typeof raw.payloadJson !== "string" ||
-          raw.payloadJson.length > 4096
+          byteLength(raw.payloadJson) > 4096
         ) {
           finish(new Error("Workflow sandbox sent an invalid phase update"));
           return;

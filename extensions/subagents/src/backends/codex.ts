@@ -323,6 +323,7 @@ const makeCodexSession = (
           cwd: task.cwd,
           env: process.env,
           stdio: ["pipe", "pipe", "pipe"],
+          windowsHide: true,
           // Own process group on POSIX so teardown can signal the whole
           // tree: a wedged app-server must not orphan a still-running
           // shell command it spawned.
@@ -977,6 +978,35 @@ function killTree(
   child: ChildProcessWithoutNullStreams,
   signal: NodeJS.Signals,
 ) {
+  if (process.platform === "win32" && child.pid) {
+    try {
+      const killer = spawn(
+        "taskkill",
+        [
+          "/pid",
+          String(child.pid),
+          "/T",
+          ...(signal === "SIGKILL" ? ["/F"] : []),
+        ],
+        { stdio: "ignore", windowsHide: true },
+      );
+      const killDirect = () => {
+        try {
+          child.kill(signal);
+        } catch {
+          // Process may already be gone.
+        }
+      };
+      killer.once("error", killDirect);
+      killer.once("exit", (code) => {
+        if (code !== 0) killDirect();
+      });
+      killer.unref();
+      return;
+    } catch {
+      // Fall through to a direct signal when taskkill cannot be launched.
+    }
+  }
   if (process.platform !== "win32" && child.pid) {
     try {
       process.kill(-child.pid, signal);
@@ -985,7 +1015,11 @@ function killTree(
       // Group may already be gone; fall through to the direct signal.
     }
   }
-  child.kill(signal);
+  try {
+    child.kill(signal);
+  } catch {
+    // Process may already be gone.
+  }
 }
 
 /** SIGTERM is normally enough; the second deadline covers a wedged Rust process. */

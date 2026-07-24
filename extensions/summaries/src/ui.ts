@@ -1,7 +1,5 @@
 import {
   getMarkdownTheme,
-  ModelSelectorComponent,
-  SettingsManager,
   ThinkingSelectorComponent,
   type ExtensionCommandContext,
   type Theme,
@@ -72,27 +70,23 @@ export function renderRecap(
   return new RecapCard(data, theme, expanded);
 }
 
-export function openModelPicker(
+export async function openModelPicker(
   ctx: ExtensionCommandContext,
-  config: SummaryConfig,
+  _config: SummaryConfig,
 ) {
-  const current = ctx.modelRegistry.find(config.provider, config.model);
-  // The normal selector records its choice in this disposable manager, leaving
-  // Pi's primary model and persistent settings untouched.
-  const settings = SettingsManager.inMemory();
-
-  return ctx.ui.custom<Model<Api> | undefined>(
-    (tui, _theme, _keybindings, done) =>
-      new ModelSelectorComponent(
-        tui,
-        current,
-        settings,
-        ctx.modelRegistry,
-        [],
-        (model) => done(model),
-        () => done(undefined),
-      ),
+  const models = [...ctx.modelRegistry.getAvailable()].sort((a, b) =>
+    `${a.provider}/${a.id}`.localeCompare(`${b.provider}/${b.id}`),
   );
+  if (models.length === 0) {
+    ctx.ui.notify(
+      "No configured models are available for run recaps.",
+      "warning",
+    );
+    return undefined;
+  }
+  const labels = models.map((model) => `${model.provider}/${model.id}`);
+  const selected = await ctx.ui.select("Summary model", labels);
+  return selected === undefined ? undefined : models[labels.indexOf(selected)];
 }
 
 export function openReasoningPicker(

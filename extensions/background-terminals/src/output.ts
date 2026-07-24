@@ -27,18 +27,18 @@ export class OutputBuffer {
   spillPath?: string;
 
   private readonly maxRetainedBytes: number;
-  private readonly spill?: (chunk: string) => void;
+  private readonly spill?: (chunk: string) => unknown;
 
-  constructor(maxRetainedBytes: number, spill?: (chunk: string) => void) {
+  constructor(maxRetainedBytes: number, spill?: (chunk: string) => unknown) {
     this.maxRetainedBytes = maxRetainedBytes;
     this.spill = spill;
   }
 
   push(chunk: string) {
-    if (chunk.length === 0) return;
+    if (chunk.length === 0) return true;
     let bytes = Buffer.byteLength(chunk, "utf8");
     this.totalBytes += bytes;
-    this.spill?.(chunk);
+    const spillAccepted = this.spill?.(chunk) !== false;
     if (bytes > this.maxRetainedBytes) {
       // A single pathological chunk larger than the whole cap: everything
       // retained so far precedes it in the stream, so evict all of it, then
@@ -69,6 +69,7 @@ export class OutputBuffer {
     }
     this.cachedText = undefined;
     this.version++;
+    return spillAccepted;
   }
 
   view(): OutputView {

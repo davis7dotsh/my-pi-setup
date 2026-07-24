@@ -65,6 +65,12 @@ test("spill receives the complete oversized chunk before trimming", () => {
   assert.equal(buf.view().text, "6789");
 });
 
+test("push reports spill backpressure while retaining the chunk", () => {
+  const buf = new OutputBuffer(1024, () => false);
+  assert.equal(buf.push("queued"), false);
+  assert.equal(buf.view().text, "queued");
+});
+
 test("byte accounting uses UTF-8 byte length, not string length", () => {
   const buf = new OutputBuffer(1024);
   buf.push("héllo"); // é is 2 bytes

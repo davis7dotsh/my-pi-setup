@@ -375,12 +375,14 @@ export default function firecrawlTools(pi: ExtensionAPI) {
         Type.Number({
           description: SCRAPE_PARAMETER_DESCRIPTIONS.waitFor,
           minimum: 0,
+          maximum: 60_000,
         }),
       ),
       timeout: Type.Optional(
         Type.Number({
           description: SCRAPE_PARAMETER_DESCRIPTIONS.timeout,
           minimum: 1,
+          maximum: 120_000,
         }),
       ),
       includeMetadata: Type.Optional(

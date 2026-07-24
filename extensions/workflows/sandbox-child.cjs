@@ -232,31 +232,42 @@ function run(source, argsJson) {
     new vm.Script(BOOTSTRAP, {
       filename: "workflow-bootstrap.js",
     }).runInContext(context, { timeout: 1000 });
-    const wrapped = `
-      globalThis.__workflowPromise = (async function workflow(agent, parallel, phase, args) {
-        "use strict";
-        ${source}
-      })(agent, parallel, phase, args).then(async (value) => {
-        await Promise.resolve();
-        const pending = __workflowCheck();
-        if (pending.unconsumed > 0) {
-          throw new Error("Workflow created " + pending.unconsumed + " unawaited agent() call(s)");
-        }
-        if (pending.inFlight > 0) {
-          throw new Error("Workflow returned before " + pending.inFlight + " agent call(s) settled");
-        }
-        return __workflowSerialize(value);
-      });
+    const workflow = vm.compileFunction(
+      `"use strict";\nreturn (async function workflow() {\n${source}\n})();`,
+      ["agent", "parallel", "phase", "args"],
+      { filename: "workflow-script.js", parsingContext: context },
+    );
+    context.__workflowBody = workflow;
+    const invoke = `
+      (() => {
+        const workflowBody = globalThis.__workflowBody;
+        delete globalThis.__workflowBody;
+        globalThis.__workflowPromise = Promise.resolve(
+          workflowBody(agent, parallel, phase, args),
+        ).then(async (value) => {
+          await Promise.resolve();
+          const pending = __workflowCheck();
+          if (pending.unconsumed > 0) {
+            throw new Error("Workflow created " + pending.unconsumed + " unawaited agent() call(s)");
+          }
+          if (pending.inFlight > 0) {
+            throw new Error("Workflow returned before " + pending.inFlight + " agent call(s) settled");
+          }
+          return __workflowSerialize(value);
+        });
+      })();
     `;
-    new vm.Script(wrapped, { filename: "workflow-script.js" }).runInContext(
+    new vm.Script(invoke, { filename: "workflow-invoke.js" }).runInContext(
       context,
       { timeout: 1000 },
     );
-    Promise.resolve(context.__workflowPromise).then((resultJson) => {
-      if (typeof resultJson !== "string")
-        throw new Error("Workflow result was not serializable");
-      send({ kind: "result", resultJson });
-    }, fail);
+    Promise.resolve(context.__workflowPromise)
+      .then((resultJson) => {
+        if (typeof resultJson !== "string")
+          throw new Error("Workflow result was not serializable");
+        send({ kind: "result", resultJson });
+      })
+      .catch(fail);
   } catch (error) {
     fail(error);
   }

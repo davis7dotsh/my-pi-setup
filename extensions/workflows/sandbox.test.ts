@@ -68,6 +68,23 @@ test("sandbox rejects unawaited agent calls", async () => {
   assert.equal(calls, 0);
 });
 
+test("sandbox source cannot escape the host accounting wrapper", async () => {
+  let calls = 0;
+  await assert.rejects(
+    run(
+      `}), agent("orphan"), Promise.resolve("bypass"); (async function () {`,
+      {
+        onAgent: async () => {
+          calls++;
+          return { ok: true, output: "unexpected" };
+        },
+      },
+    ),
+    /unawaited agent/,
+  );
+  assert.equal(calls, 0);
+});
+
 test("sandbox VM still rejects non-yielding synchronous code", async () => {
   await assert.rejects(run(`while (true) {}`), /timed out/);
 });

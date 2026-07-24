@@ -38,8 +38,10 @@ import { OutputBuffer } from "./output.ts";
 export const MAX_RUNNING = 8;
 export const MAX_TRACKED = 32;
 const MAX_SETTLED_HISTORY = MAX_TRACKED * 4;
-/** In-memory retained cap per stream; the spill file keeps the full capture. */
+/** In-memory retained cap per stream. */
 export const RETAINED_PER_STREAM = 2 * 1024 * 1024;
+/** Private full-log spills are bounded so a firehose cannot fill the temp disk. */
+export const MAX_SPILL_BYTES_PER_STREAM = 256 * 1024 * 1024;
 const STOP_TIMEOUT_MS = 5_000;
 /** SIGTERM is normally enough; the second deadline covers a wedged process. */
 const FORCE_KILL_AFTER_MS = 2_000;
@@ -469,6 +471,7 @@ const makeManager = Effect.gen(function* () {
     entry: () => Entry | undefined,
     id: string,
     stream: "stdout" | "stderr",
+    resumeSource: () => void,
   ) => {
     const dir = resolveSpillDir();
     if (!dir) return undefined;
@@ -479,8 +482,11 @@ const makeManager = Effect.gen(function* () {
         mode: 0o600,
       });
       let broken = false;
+      let capped = false;
+      let writtenBytes = 0;
       file.on("error", (error) => {
         broken = true;
+        resumeSource();
         const current = entry();
         if (current) {
           const buf =
@@ -497,7 +503,25 @@ const makeManager = Effect.gen(function* () {
         write: (chunk: string) => {
           // writableEnded guard: late 'data' after the settle flush must not
           // error the ended stream (and falsely report the spill as broken).
-          if (!broken && !file.writableEnded) file.write(chunk);
+          if (broken || capped || file.writableEnded) return true;
+          const chunkBytes = Buffer.byteLength(chunk, "utf8");
+          if (writtenBytes + chunkBytes > MAX_SPILL_BYTES_PER_STREAM) {
+            capped = true;
+            const current = entry();
+            if (current) {
+              const buf =
+                stream === "stdout" ? current.stdoutBuf : current.stderrBuf;
+              buf.spillPath = undefined;
+              current.snapshot.errorText ??= bounded(
+                `${stream} full-log spill reached the ${MAX_SPILL_BYTES_PER_STREAM}-byte safety limit`,
+              );
+            }
+            return true;
+          }
+          writtenBytes += chunkBytes;
+          const accepted = file.write(chunk);
+          if (!accepted) file.once("drain", resumeSource);
+          return accepted;
         },
       };
     } catch {
@@ -544,8 +568,12 @@ const makeManager = Effect.gen(function* () {
 
         const id = `bt-${++counter}`;
         const entryRef = () => entries.get(id);
-        const stdoutSpill = makeSpill(entryRef, id, "stdout");
-        const stderrSpill = makeSpill(entryRef, id, "stderr");
+        const stdoutSpill = makeSpill(entryRef, id, "stdout", () =>
+          child.stdout?.resume(),
+        );
+        const stderrSpill = makeSpill(entryRef, id, "stderr", () =>
+          child.stderr?.resume(),
+        );
         const stdoutBuf = new OutputBuffer(
           RETAINED_PER_STREAM,
           stdoutSpill?.write,
@@ -598,12 +626,12 @@ const makeManager = Effect.gen(function* () {
         // chunk boundaries.
         child.stdout?.setEncoding("utf8");
         child.stdout?.on("data", (chunk: string) => {
-          stdoutBuf.push(chunk);
+          if (!stdoutBuf.push(chunk)) child.stdout?.pause();
           notify(id);
         });
         child.stderr?.setEncoding("utf8");
         child.stderr?.on("data", (chunk: string) => {
-          stderrBuf.push(chunk);
+          if (!stderrBuf.push(chunk)) child.stderr?.pause();
           notify(id);
         });
         // Spawn failures (ENOENT etc.) arrive via 'error', not a throw. Node

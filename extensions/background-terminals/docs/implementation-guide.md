@@ -1,9 +1,9 @@
 # background-terminals — Implementation Guide
 
-> Research phase output. Written 2026-07-14 against:
-> - `effect@4.0.0-beta.98` (verified installed in this package's `node_modules/effect`; the
+> Research phase output. Updated 2026-07-24 against:
+> - `effect@4.0.0-beta.101` (verified installed in this package's `node_modules/effect`; the
 >   `unstable/process` module exists there but we deliberately do NOT use it — see §6)
-> - `@earendil-works/pi-coding-agent@^0.80.6` docs at
+> - `@earendil-works/pi-coding-agent@^0.82.0` docs at
 >   `/Users/davis/.vite-plus/js_runtime/node/24.18.0/lib/node_modules/@earendil-works/pi-coding-agent/docs/`
 > - Reference implementations: `extensions/subagents` (Effect v4 service/manager/read-model/tools)
 >   and `extensions/workflows` (dashboard UI, status line, background completion follow-ups).
@@ -81,10 +81,10 @@ pick these up.
     "test": "node --test --experimental-strip-types manager.test.ts output.test.ts result-delivery.test.ts ps.test.ts"
   },
   "dependencies": {
-    "effect": "4.0.0-beta.98"          // EXACT pin, no ^ — must match subagents
+    "effect": "^4.0.0-beta.99"
   },
   "devDependencies": {
-    "@effect/tsgo": "^0.19.0",
+    "@effect/tsgo": "^0.24.2",
     "typescript": "^7.0.2"
   }
 }
@@ -100,7 +100,7 @@ pick these up.
 }
 ```
 
-Per AGENTS.md: add deps with an install command (`npm install effect@4.0.0-beta.98 --save-exact`),
+Per AGENTS.md: add deps with an install command (`npm install effect@^4.0.0-beta.99`),
 run `npm run check` when done, avoid explicit return types unless needed, no `as any`.
 Verification runs from inside `extensions/background-terminals/` only — never root scripts
 (house rule, effect-v4-extension-guide.md §7/§8).
@@ -366,7 +366,7 @@ child.once("exit", (code, signal) => {
 
 ### 6.1 Why not `effect/unstable/process` yet?
 
-`ChildProcess.make` + `ChildProcessHandle` is the eventual target, but pinned beta.98
+`ChildProcess.make` + `ChildProcessHandle` is the eventual target, but the current Effect beta
 cannot preserve the current process contract yet:
 
 1. `forceKillAfter` does not correctly wait before SIGKILL on POSIX in this pin.
@@ -902,7 +902,7 @@ tricks; they exist on any machine running pi)
     parallel tool calls race past it (manager.ts spawn comment).
 11. **Bound every teardown wait** — 5s timeout on scope closes, or a wedged child hangs
     `session_shutdown` (subagents `disposeAll` + `abortEntry` comments).
-12. **Snapshot kill interest before Deferred completion** — beta.98 can resume kill waiters
+12. **Snapshot kill interest before Deferred completion** — Effect can resume kill waiters
     immediately; compute `consumed` before `Deferred.doneUnsafe` so their `ensuring`
     blocks cannot release interest first.
 13. **Tool output limits are a hard requirement** — unbounded stdout in a tool result causes
