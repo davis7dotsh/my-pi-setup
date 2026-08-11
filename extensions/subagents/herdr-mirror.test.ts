@@ -428,6 +428,56 @@ test("authenticated viewer actions stay bound to the attached subagent", async (
   await bridge.close();
 });
 
+test("bridge applies message limits to individual protocol lines", async () => {
+  const view = createView([snapshot("sa-1")]);
+  const baseDir = await mkdtemp(path.join(os.tmpdir(), "fable-lines-test-"));
+  const actions: string[] = [];
+  const bridge = await startMirrorBridge(view.view, {
+    baseDir,
+    actions: {
+      async send(_id, text) {
+        actions.push(text);
+      },
+      async abort() {},
+      async focusParent() {},
+    },
+  });
+  const client = await connectLines(bridge.socketPath);
+  client.send({
+    version: 1,
+    type: "attach",
+    token: bridge.credentialFor("sa-1"),
+    subagentId: "sa-1",
+  });
+  await client.next();
+
+  const first = JSON.stringify({
+    version: 1,
+    type: "action",
+    requestId: "large-1",
+    action: "send",
+    text: "a".repeat(32_700),
+  });
+  const second = JSON.stringify({
+    version: 1,
+    type: "action",
+    requestId: "large-2",
+    action: "send",
+    text: "b".repeat(32_700),
+  });
+  client.socket.write(first.slice(0, 30_000));
+  client.socket.write(`${first.slice(30_000)}\n${second}\n`);
+
+  assert.equal(((await client.next()) as { ok: boolean }).ok, true);
+  assert.equal(((await client.next()) as { ok: boolean }).ok, true);
+  assert.deepEqual(
+    actions.map((text) => text.length),
+    [32_700, 32_700],
+  );
+  client.socket.destroy();
+  await bridge.close();
+});
+
 test("bridge bounds queued actions and unauthenticated idle clients", async () => {
   const view = createView([snapshot("sa-1")]);
   const baseDir = await mkdtemp(path.join(os.tmpdir(), "fable-bounds-test-"));
@@ -741,6 +791,16 @@ test("viewer input parser handles batched text and controls", async () => {
     commands: [{ action: "focus-parent" }],
     escapeState: "none",
   });
+  assert.deepEqual(consumeViewerInput("", "\u0018", "escape"), {
+    input: "",
+    commands: [{ action: "abort" }],
+    escapeState: "none",
+  });
+  assert.deepEqual(consumeViewerInput("", "\u0004", "osc"), {
+    input: "",
+    commands: [{ action: "close" }],
+    escapeState: "none",
+  });
   assert.deepEqual(consumeViewerInput("", "send before close\r\u0004"), {
     input: "",
     commands: [
@@ -820,6 +880,13 @@ test("standalone renderer shows normalized transcript, tools, queue, usage, and 
       },
     ).join("\n"),
     /\u001b|owned/,
+  );
+  assert.doesNotMatch(
+    renderMirrorFrame(
+      snapshot("sa-c1-control", { title: "bad\u009d0;owned\u009c" }),
+      { columns: 80, rows: 10, input: "" },
+    ).join("\n"),
+    /[\u0080-\u009f]/,
   );
 });
 

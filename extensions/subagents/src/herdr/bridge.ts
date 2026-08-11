@@ -217,15 +217,15 @@ export async function startMirrorBridge(
 
     socket.on("data", (chunk) => {
       buffer += chunk;
-      if (Buffer.byteLength(buffer, "utf8") > MAX_VIEWER_MESSAGE_BYTES) {
-        failAndClose("oversized", "Viewer message exceeds the bridge limit.");
-        return;
-      }
       while (true) {
         const newline = buffer.indexOf("\n");
-        if (newline < 0) return;
+        if (newline < 0) break;
         const line = buffer.slice(0, newline);
         buffer = buffer.slice(newline + 1);
+        if (Buffer.byteLength(line, "utf8") > MAX_VIEWER_MESSAGE_BYTES) {
+          failAndClose("oversized", "Viewer message exceeds the bridge limit.");
+          return;
+        }
         let decoded: unknown;
         try {
           decoded = JSON.parse(line);
@@ -264,6 +264,9 @@ export async function startMirrorBridge(
           failAndClose("malformed", "Viewer is already attached.");
           return;
         }
+      }
+      if (Buffer.byteLength(buffer, "utf8") > MAX_VIEWER_MESSAGE_BYTES) {
+        failAndClose("oversized", "Viewer message exceeds the bridge limit.");
       }
     });
 

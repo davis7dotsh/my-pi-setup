@@ -8,7 +8,7 @@ export function sanitizeTerminalText(text: string) {
       "",
     )
     .replaceAll("\t", "  ")
-    .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "");
+    .replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "");
 }
 
 const clean = sanitizeTerminalText;

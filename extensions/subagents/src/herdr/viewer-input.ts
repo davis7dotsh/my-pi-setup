@@ -14,6 +14,35 @@ export function consumeViewerInput(
   let escapeState = initialEscapeState;
   const commands: ViewerInputCommand[] = [];
   for (const character of chunk) {
+    // Keyboard actions always win over an incomplete terminal escape sequence
+    // so a malformed or split sequence can never trap the viewer.
+    if (character === "\u0004" || character === "\u0003") {
+      commands.push({ action: "close" });
+      escapeState = "none";
+      continue;
+    }
+    if (character === "\u0018") {
+      commands.push({ action: "abort" });
+      escapeState = "none";
+      continue;
+    }
+    if (character === "\u0010") {
+      commands.push({ action: "focus-parent" });
+      escapeState = "none";
+      continue;
+    }
+    if (character === "\r" || character === "\n") {
+      const text = input.trim();
+      if (text) commands.push({ action: "send", text });
+      input = "";
+      escapeState = "none";
+      continue;
+    }
+    if (character === "\u007f" || character === "\b") {
+      input = [...input].slice(0, -1).join("");
+      escapeState = "none";
+      continue;
+    }
     if (escapeState === "escape") {
       escapeState =
         character === "[" || character === "O"
@@ -38,28 +67,6 @@ export function consumeViewerInput(
     }
     if (character === "\u001b") {
       escapeState = "escape";
-      continue;
-    }
-    if (character === "\u0004" || character === "\u0003") {
-      commands.push({ action: "close" });
-      continue;
-    }
-    if (character === "\u0018") {
-      commands.push({ action: "abort" });
-      continue;
-    }
-    if (character === "\u0010") {
-      commands.push({ action: "focus-parent" });
-      continue;
-    }
-    if (character === "\r" || character === "\n") {
-      const text = input.trim();
-      if (text) commands.push({ action: "send", text });
-      input = "";
-      continue;
-    }
-    if (character === "\u007f" || character === "\b") {
-      input = [...input].slice(0, -1).join("");
       continue;
     }
     if (/^[\u0000-\u001f\u007f]$/.test(character)) continue;
