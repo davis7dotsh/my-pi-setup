@@ -11,21 +11,75 @@ function clean(text: string) {
     .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "");
 }
 
+const graphemeSegmenter = new Intl.Segmenter(undefined, {
+  granularity: "grapheme",
+});
+
+function graphemes(text: string) {
+  return [...graphemeSegmenter.segment(text)].map(({ segment }) => segment);
+}
+
+function graphemeWidth(grapheme: string) {
+  if (/^\p{Mark}+$/u.test(grapheme)) return 0;
+  if (/\p{Extended_Pictographic}/u.test(grapheme)) return 2;
+  const point = grapheme.codePointAt(0) ?? 0;
+  return (point >= 0x1100 && point <= 0x115f) ||
+    (point >= 0x2e80 && point <= 0xa4cf) ||
+    (point >= 0xac00 && point <= 0xd7a3) ||
+    (point >= 0xf900 && point <= 0xfaff) ||
+    (point >= 0xfe10 && point <= 0xfe6f) ||
+    (point >= 0xff00 && point <= 0xff60) ||
+    (point >= 0xffe0 && point <= 0xffe6)
+    ? 2
+    : 1;
+}
+
+function displayWidth(text: string) {
+  return graphemes(text).reduce(
+    (total, grapheme) => total + graphemeWidth(grapheme),
+    0,
+  );
+}
+
+function truncateDisplay(text: string, width: number) {
+  let used = 0;
+  const kept: string[] = [];
+  for (const grapheme of graphemes(clean(text))) {
+    const next = used + graphemeWidth(grapheme);
+    if (next > width) break;
+    kept.push(grapheme);
+    used = next;
+  }
+  return kept.join("");
+}
+
 function wrap(text: string, width: number) {
   const lines: string[] = [];
   for (const sourceLine of clean(text).split("\n")) {
-    let remaining = sourceLine;
-    if (!remaining) {
+    let remaining = graphemes(sourceLine);
+    if (remaining.length === 0) {
       lines.push("");
       continue;
     }
-    while (remaining.length > width) {
-      let split = remaining.lastIndexOf(" ", width);
-      if (split < Math.floor(width / 2)) split = width;
-      lines.push(remaining.slice(0, split));
-      remaining = remaining.slice(split).trimStart();
+    while (displayWidth(remaining.join("")) > width) {
+      let used = 0;
+      let count = 0;
+      while (count < remaining.length) {
+        const next = used + graphemeWidth(remaining[count]);
+        if (next > width) break;
+        used = next;
+        count++;
+      }
+      let lastSpace = -1;
+      for (let index = 0; index < count; index++) {
+        if (/^\s$/u.test(remaining[index])) lastSpace = index;
+      }
+      const split = lastSpace >= Math.floor(count / 2) ? lastSpace : count;
+      lines.push(remaining.slice(0, split).join("").trimEnd());
+      remaining = remaining.slice(split);
+      while (remaining[0] && /^\s$/u.test(remaining[0])) remaining.shift();
     }
-    lines.push(remaining);
+    lines.push(remaining.join(""));
   }
   return lines;
 }
@@ -73,18 +127,21 @@ export function renderMirrorFrame(
     snapshot.backend,
     snapshot.meta.modelLabel ?? "?",
     utilization(snapshot),
-  ].filter(Boolean);
+  ]
+    .map(clean)
+    .filter(Boolean);
   const lines = [
     divider,
-    `${snapshot.id} · ${snapshot.title} · ${headerDetails.join(" · ")}`.slice(
-      0,
+    truncateDisplay(
+      `${clean(snapshot.id)} · ${clean(snapshot.title)} · ${headerDetails.join(" · ")}`,
       width,
     ),
     divider,
   ];
 
+  const pinnedCapacity = Math.max(1, Math.min(3, options.rows - 6));
   const pinned = snapshot.errorText
-    ? [`error: ${clean(snapshot.errorText)}`]
+    ? wrap(`error: ${snapshot.errorText}`, width).slice(0, pinnedCapacity)
     : [];
   for (const item of snapshot.transcript) {
     if (item.kind === "user") {
@@ -120,24 +177,22 @@ export function renderMirrorFrame(
 
   const footer = [
     divider,
-    `> ${clean(options.input)}`.slice(0, width),
-    [
-      options.notice,
-      "Enter send · Ctrl-X abort · Ctrl-P parent · Ctrl-D close mirror",
-    ]
-      .filter(Boolean)
-      .join(" · ")
-      .slice(0, width),
+    truncateDisplay(`> ${options.input}`, width),
+    truncateDisplay(
+      [
+        options.notice,
+        "Enter send · Ctrl-X abort · Ctrl-P parent · Ctrl-D close mirror",
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      width,
+    ),
   ];
   const bodyCapacity = Math.max(
-    1,
+    0,
     options.rows - footer.length - 3 - pinned.length,
   );
   const body = lines.slice(3);
-  return [
-    ...lines.slice(0, 3),
-    ...pinned,
-    ...body.slice(-bodyCapacity),
-    ...footer,
-  ];
+  const visibleBody = bodyCapacity > 0 ? body.slice(-bodyCapacity) : [];
+  return [...lines.slice(0, 3), ...pinned, ...visibleBody, ...footer];
 }

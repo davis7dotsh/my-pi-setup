@@ -7,6 +7,7 @@ import {
   MIRROR_PROTOCOL_VERSION,
   parseBridgeMessage,
 } from "./protocol.ts";
+import { consumeViewerInput } from "./viewer-input.ts";
 import { renderMirrorFrame } from "./viewer-render.ts";
 
 const execFileAsync = promisify(execFile);
@@ -30,7 +31,10 @@ const parentLabel = process.env.FABLE_MIRROR_PARENT_LABEL ?? parentPaneId;
 const parentSessionId =
   process.env.FABLE_MIRROR_PARENT_SESSION_ID || parentPaneId;
 const initialModel = process.env.FABLE_MIRROR_MODEL ?? "Fable";
-const herdr = process.env.HERDR_BIN ?? "/opt/homebrew/bin/herdr";
+const herdr = process.env.HERDR_BIN ?? "herdr";
+const reportEnvironment = { ...process.env };
+delete reportEnvironment.FABLE_MIRROR_TOKEN;
+delete reportEnvironment.FABLE_MIRROR_SOCKET;
 
 let snapshot: SubagentSnapshot | undefined;
 let notice = "Connecting to parent…";
@@ -43,7 +47,10 @@ let reporting = Promise.resolve();
 function runHerdr(args: string[]) {
   reporting = reporting
     .then(() =>
-      execFileAsync(herdr, args, { env: process.env, timeout: 5_000 }),
+      execFileAsync(herdr, args, {
+        env: reportEnvironment,
+        timeout: 5_000,
+      }),
     )
     .then(() => undefined)
     .catch(() => undefined);
@@ -162,18 +169,26 @@ function connect() {
   });
   current.on("data", (chunk) => {
     incoming += chunk;
-    if (Buffer.byteLength(incoming, "utf8") > MAX_SNAPSHOT_MESSAGE_BYTES) {
-      fatalProtocolError = true;
-      notice = "Parent sent an oversized message";
-      render();
-      current.destroy();
-      return;
-    }
     while (true) {
       const newline = incoming.indexOf("\n");
-      if (newline < 0) break;
+      if (newline < 0) {
+        if (Buffer.byteLength(incoming, "utf8") > MAX_SNAPSHOT_MESSAGE_BYTES) {
+          fatalProtocolError = true;
+          notice = "Parent sent an oversized message";
+          render();
+          current.destroy();
+        }
+        break;
+      }
       const line = incoming.slice(0, newline);
       incoming = incoming.slice(newline + 1);
+      if (Buffer.byteLength(line, "utf8") > MAX_SNAPSHOT_MESSAGE_BYTES) {
+        fatalProtocolError = true;
+        notice = "Parent sent an oversized message";
+        render();
+        current.destroy();
+        return;
+      }
       let decoded: unknown;
       try {
         decoded = JSON.parse(line);
@@ -265,41 +280,20 @@ if (process.stdin.isTTY) {
   process.stdin.setRawMode(true);
   process.stdin.resume();
   process.stdin.on("data", (data: Buffer) => {
-    const text = data.toString("utf8");
-    if (text === "\u0004" || text === "\u0003") {
-      closing = true;
-      socket?.destroy();
-      process.exit(0);
-    }
-    if (text === "\u0018") {
-      sendAction("abort");
-      return;
-    }
-    if (text === "\u0010") {
-      sendAction("focus-parent");
-      return;
-    }
-    if (text === "\r" || text === "\n") {
-      const message = input.trim();
-      if (message) {
-        input = "";
-        sendAction("send", message);
+    const consumed = consumeViewerInput(input, data.toString("utf8"));
+    input = consumed.input;
+    for (const command of consumed.commands) {
+      if (command.action === "close") {
+        closing = true;
+        socket?.destroy();
+        process.exit(0);
+      } else if (command.action === "send") {
+        sendAction("send", command.text);
+      } else {
+        sendAction(command.action);
       }
-      return;
     }
-    if (text === "\u007f" || text === "\b") {
-      input = [...input].slice(0, -1).join("");
-      render();
-      return;
-    }
-    const printable = text.replace(/[\u0000-\u001f\u007f]/g, "");
-    if (
-      printable &&
-      Buffer.byteLength(input + printable, "utf8") <= 32 * 1024
-    ) {
-      input += printable;
-      render();
-    }
+    render();
   });
 }
 connect();

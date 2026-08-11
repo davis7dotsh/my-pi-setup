@@ -192,7 +192,7 @@ export default function (pi: ExtensionAPI) {
   const getManager = () => {
     managerPromise ??= getRuntime()
       .runPromise(SubagentManager)
-      .then(async (manager) => {
+      .then((manager) => {
         manager.view.setOnSettled(onSettled);
         unsubStatus?.();
         unsubStatus = manager.view.subscribe(() => updateStatus(manager));
@@ -200,7 +200,6 @@ export default function (pi: ExtensionAPI) {
         mirrorFrontendPromise ??= startMirrorFrontend(manager).catch(
           () => undefined,
         );
-        await mirrorFrontendPromise;
         return manager;
       });
     return managerPromise;

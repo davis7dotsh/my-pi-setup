@@ -51,9 +51,17 @@ function parseCreatedTab(stdout: string) {
   };
 }
 
+const graphemeSegmenter = new Intl.Segmenter(undefined, {
+  granularity: "grapheme",
+});
+
 function safeLabel(text: string, fallback: string) {
   const clean = text.replace(/[\u0000-\u001f\u007f]/g, " ").trim();
-  return clean.slice(0, 100) || fallback;
+  const bounded = [...graphemeSegmenter.segment(clean)]
+    .slice(0, 100)
+    .map(({ segment }) => segment)
+    .join("");
+  return bounded || fallback;
 }
 
 export async function createHerdrMirrorAdapterFromEnvironment(
@@ -64,16 +72,20 @@ export async function createHerdrMirrorAdapterFromEnvironment(
     return undefined;
   }
 
+  let viewerHerdrBinary = env.HERDR_BIN ?? "herdr";
   let runHerdrCommand: HerdrCommandRunner;
   if (commandRunner) {
     runHerdrCommand = commandRunner;
   } else {
     const herdr = await resolveHerdrBinary(env);
+    viewerHerdrBinary = herdr;
     runHerdrCommand = async (args) => {
+      const timeout =
+        args[0] === "tab" && args[1] === "create" ? 15_000 : 5_000;
       const { stdout } = await execFileAsync(herdr, args, {
         env,
         maxBuffer: 4 * 1024 * 1024,
-        timeout: 5_000,
+        timeout,
       });
       return stdout;
     };
@@ -146,7 +158,9 @@ export async function createHerdrMirrorAdapterFromEnvironment(
           "--env",
           `FABLE_MIRROR_PARENT_SESSION_ID=${launch.parent.sessionId ?? ""}`,
           "--env",
-          `FABLE_MIRROR_MODEL=${launch.model}`,
+          `FABLE_MIRROR_MODEL=${safeLabel(launch.model, "Fable")}`,
+          "--env",
+          `HERDR_BIN=${viewerHerdrBinary}`,
           "--no-focus",
         ]),
       );

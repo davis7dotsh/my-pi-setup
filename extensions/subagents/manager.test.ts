@@ -67,11 +67,12 @@ async function waitForSnapshot(
   const current = manager.view.get(id);
   if (current && predicate(current)) return current;
   return new Promise<NonNullable<typeof current>>((resolve, reject) => {
+    let unsubscribe = () => {};
     const timeout = setTimeout(() => {
       unsubscribe();
       reject(new Error(`Timed out waiting for ${id}`));
     }, 5_000);
-    const unsubscribe = manager.view.subscribeTo(id, () => {
+    unsubscribe = manager.view.subscribeTo(id, () => {
       const snapshot = manager.view.get(id);
       if (!snapshot || !predicate(snapshot)) return;
       clearTimeout(timeout);

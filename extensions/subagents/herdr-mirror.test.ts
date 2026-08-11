@@ -305,8 +305,8 @@ test("pane creation failures are non-fatal and are not retried on every snapshot
   });
 
   view.put({ ...snapshot("sa-1"), finalText: "still running" });
-  assert.equal(herdr.launches.length, 1);
   await coordinator.close();
+  assert.equal(herdr.launches.length, 1);
   assert.deepEqual(herdr.closed, []);
 });
 
@@ -483,6 +483,65 @@ test("bridge bounds queued actions and unauthenticated idle clients", async () =
   await bridge.close();
 });
 
+test("queued viewer actions stop when that viewer disconnects", async () => {
+  const view = createView([snapshot("sa-1")]);
+  const baseDir = await mkdtemp(
+    path.join(os.tmpdir(), "fable-disconnect-test-"),
+  );
+  const actions: string[] = [];
+  let releaseFirst!: () => void;
+  let signalStarted!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  const started = new Promise<void>((resolve) => {
+    signalStarted = resolve;
+  });
+  const bridge = await startMirrorBridge(view.view, {
+    baseDir,
+    actions: {
+      async send(_id, text) {
+        actions.push(text);
+        if (text === "first") {
+          signalStarted();
+          await blocked;
+        }
+      },
+      async abort() {},
+      async focusParent() {},
+    },
+  });
+  const client = await connectLines(bridge.socketPath);
+  client.send({
+    version: 1,
+    type: "attach",
+    token: bridge.credentialFor("sa-1"),
+    subagentId: "sa-1",
+  });
+  await client.next();
+  client.send({
+    version: 1,
+    type: "action",
+    requestId: "first",
+    action: "send",
+    text: "first",
+  });
+  await started;
+  client.send({
+    version: 1,
+    type: "action",
+    requestId: "second",
+    action: "send",
+    text: "second",
+  });
+  client.socket.destroy();
+  releaseFirst();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(actions, ["first"]);
+  await bridge.close();
+});
+
 test("malformed, unauthorized, oversized, and disconnected viewers cannot act", async () => {
   const view = createView([snapshot("sa-1")]);
   const baseDir = await mkdtemp(path.join(os.tmpdir(), "fable-security-test-"));
@@ -654,6 +713,18 @@ test("standalone viewer reconnects after a transient bridge disconnect", async (
   await new Promise<void>((resolve) => server.close(() => resolve()));
 });
 
+test("viewer input parser handles batched text and controls", async () => {
+  const { consumeViewerInput } = await import("./src/herdr/viewer-input.ts");
+  assert.deepEqual(consumeViewerInput("", "continue this\r"), {
+    input: "",
+    commands: [{ action: "send", text: "continue this" }],
+  });
+  assert.deepEqual(consumeViewerInput("draft", "\u007f!\u0010\u0018"), {
+    input: "draf!",
+    commands: [{ action: "focus-parent" }, { action: "abort" }],
+  });
+});
+
 test("viewer rejects malformed bridge snapshots before rendering", () => {
   assert.equal(
     parseBridgeMessage({
@@ -713,13 +784,24 @@ test("standalone renderer shows normalized transcript, tools, queue, usage, and 
   assert.match(frame, /Run was aborted/);
   assert.match(frame, /next instruction/);
   assert.match(frame, /Ctrl-P parent/);
+  assert.doesNotMatch(
+    renderMirrorFrame(
+      snapshot("sa-control", { title: "bad\u001b]0;owned\u0007" }),
+      {
+        columns: 80,
+        rows: 10,
+        input: "",
+      },
+    ).join("\n"),
+    /\u001b|owned/,
+  );
 });
 
 test("renderer keeps terminal errors visible above a long transcript", () => {
-  const frame = renderMirrorFrame(
+  const frameLines = renderMirrorFrame(
     snapshot("sa-1", {
       status: "error",
-      errorText: "Run was aborted",
+      errorText: `Run was aborted ${"because of a long backend failure ".repeat(20)}`,
       transcript: Array.from({ length: 40 }, (_, index) => ({
         kind: "assistant" as const,
         parts: [
@@ -728,7 +810,9 @@ test("renderer keeps terminal errors visible above a long transcript", () => {
       })),
     }),
     { columns: 80, rows: 10, input: "" },
-  ).join("\n");
+  );
+  const frame = frameLines.join("\n");
 
   assert.match(frame, /error: Run was aborted/);
+  assert.ok(frameLines.length <= 10);
 });

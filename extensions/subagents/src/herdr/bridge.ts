@@ -168,6 +168,7 @@ export async function startMirrorBridge(
       pendingActions++;
       actionQueue = actionQueue
         .then(async () => {
+          if (socket.destroyed) return;
           if (!options.actions) {
             writeActionResult(
               message.requestId,
@@ -250,11 +251,12 @@ export async function startMirrorBridge(
             failAndClose("not_found", "Unknown subagent.");
             return;
           }
-          attachedSubagentId = message.subagentId;
+          const subagentId = message.subagentId;
+          attachedSubagentId = subagentId;
           socket.setTimeout(0);
-          sendSnapshot(attachedSubagentId);
-          unsubscribe = view.subscribeTo(attachedSubagentId, () =>
-            scheduleSnapshot(attachedSubagentId!),
+          sendSnapshot(subagentId);
+          unsubscribe = view.subscribeTo(subagentId, () =>
+            scheduleSnapshot(subagentId),
           );
         } else if (message.type === "action") {
           handleAction(attachedSubagentId, message);
@@ -276,14 +278,25 @@ export async function startMirrorBridge(
     socket.once("error", cleanup);
   });
 
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(socketPath, () => {
-      server.off("error", reject);
-      resolve();
+  let ownsSocket = false;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, () => {
+        server.off("error", reject);
+        ownsSocket = true;
+        resolve();
+      });
     });
-  });
-  await chmod(socketPath, 0o600);
+    await chmod(socketPath, 0o600);
+  } catch (error) {
+    if (server.listening) {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+    if (ownsSocket) await unlink(socketPath).catch(() => undefined);
+    if (ownsDirectory) await rm(directory, { recursive: true, force: true });
+    throw error;
+  }
 
   let closed = false;
   return {
