@@ -217,6 +217,12 @@ export default function (pi: ExtensionAPI) {
       managerPromise = activeRuntime
         .runPromise(SubagentManager)
         .then((manager) => {
+          if (
+            generation !== sessionGeneration ||
+            sessionContext === undefined
+          ) {
+            return manager;
+          }
           manager.view.setOnSettled(onSettled);
           unsubStatus?.();
           unsubStatus = manager.view.subscribe(() => updateStatus(manager));
