@@ -502,6 +502,19 @@ test("bridge bounds queued actions and unauthenticated idle clients", async () =
   const idleError = (await idle.next()) as { code: string };
   assert.equal(idleError.code, "unauthorized");
 
+  const dripping = await connectLines(bridge.socketPath);
+  const drip = setInterval(() => {
+    if (!dripping.socket.destroyed) dripping.socket.write("{");
+  }, 5);
+  const dripOutcome = await Promise.race([
+    dripping.next(),
+    new Promise<"late">((resolve) => setTimeout(() => resolve("late"), 100)),
+  ]);
+  clearInterval(drip);
+  dripping.socket.destroy();
+  assert.notEqual(dripOutcome, "late");
+  assert.equal((dripOutcome as { code: string }).code, "unauthorized");
+
   const client = await connectLines(bridge.socketPath);
   client.send({
     version: 1,

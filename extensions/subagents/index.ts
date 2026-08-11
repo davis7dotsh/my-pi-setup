@@ -179,7 +179,7 @@ export default function (pi: ExtensionAPI) {
     const bridge = await startMirrorBridge(manager.view, {
       actions: {
         send: (id, text) => runTool(activeRuntime, manager.send(id, text)),
-        abort: async (id) => manager.view.requestAbort(id),
+        abort: (id) => runTool(activeRuntime, manager.abort(id)),
         focusParent: () => adapter.focusParent(),
       },
     });

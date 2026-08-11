@@ -202,9 +202,9 @@ export async function startMirrorBridge(
         });
     };
 
-    socket.setTimeout(authTimeoutMs, () => {
+    const authDeadline = setTimeout(() => {
       failAndClose("unauthorized", "Viewer did not authenticate in time.");
-    });
+    }, authTimeoutMs);
 
     socket.on("drain", () => {
       waitingForDrain = false;
@@ -253,7 +253,7 @@ export async function startMirrorBridge(
           }
           const subagentId = message.subagentId;
           attachedSubagentId = subagentId;
-          socket.setTimeout(0);
+          clearTimeout(authDeadline);
           sendSnapshot(subagentId);
           unsubscribe = view.subscribeTo(subagentId, () =>
             scheduleSnapshot(subagentId),
@@ -271,6 +271,7 @@ export async function startMirrorBridge(
     });
 
     const cleanup = () => {
+      clearTimeout(authDeadline);
       unsubscribe?.();
       unsubscribe = undefined;
       if (snapshotTimer) clearTimeout(snapshotTimer);

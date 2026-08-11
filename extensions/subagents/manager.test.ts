@@ -278,7 +278,7 @@ test("idle restarts respect the concurrency cap", async () => {
   });
 });
 
-test("frontend abort settles once without consuming parent delivery", async () => {
+test("awaited frontend abort settles once without consuming parent delivery", async () => {
   await withManager(async (manager, runtime) => {
     const settled: Array<{ id: string; consumed: boolean }> = [];
     manager.view.setOnSettled((snap, consumed) =>
@@ -289,15 +289,12 @@ test("frontend abort settles once without consuming parent delivery", async () =
       manager.spawn("claude", task("Abort from a frontend")),
     );
 
-    manager.view.requestAbort(snap.id);
-    manager.view.requestAbort(snap.id);
-    const aborted = await waitForSnapshot(
-      manager,
-      snap.id,
-      (current) => current.status === "error",
-    );
+    await runTool(runtime, manager.abort(snap.id));
+    await runTool(runtime, manager.abort(snap.id));
+    const aborted = manager.view.get(snap.id);
 
-    assert.equal(aborted.errorText, "Run was aborted");
+    assert.equal(aborted?.status, "error");
+    assert.equal(aborted?.errorText, "Run was aborted");
     assert.deepEqual(settled, [{ id: snap.id, consumed: false }]);
   });
 });

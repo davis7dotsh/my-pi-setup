@@ -36,13 +36,6 @@ function graphemeWidth(grapheme: string) {
     : 1;
 }
 
-function displayWidth(text: string) {
-  return graphemes(text).reduce(
-    (total, grapheme) => total + graphemeWidth(grapheme),
-    0,
-  );
-}
-
 function truncateDisplay(text: string, width: number) {
   let used = 0;
   const kept: string[] = [];
@@ -58,30 +51,36 @@ function truncateDisplay(text: string, width: number) {
 function wrap(text: string, width: number) {
   const lines: string[] = [];
   for (const sourceLine of clean(text).split("\n")) {
-    let remaining = graphemes(sourceLine);
-    if (remaining.length === 0) {
+    const source = graphemes(sourceLine);
+    if (source.length === 0) {
       lines.push("");
       continue;
     }
-    while (displayWidth(remaining.join("")) > width) {
+    let start = 0;
+    while (start < source.length) {
       let used = 0;
-      let count = 0;
-      while (count < remaining.length) {
-        const next = used + graphemeWidth(remaining[count]);
+      let end = start;
+      let lastSpace = -1;
+      while (end < source.length) {
+        const next = used + graphemeWidth(source[end]);
         if (next > width) break;
         used = next;
-        count++;
+        if (/^\s$/u.test(source[end])) lastSpace = end;
+        end++;
       }
-      let lastSpace = -1;
-      for (let index = 0; index < count; index++) {
-        if (/^\s$/u.test(remaining[index])) lastSpace = index;
+      if (end === source.length) {
+        lines.push(source.slice(start).join(""));
+        break;
       }
-      const split = lastSpace >= Math.floor(count / 2) ? lastSpace : count;
-      lines.push(remaining.slice(0, split).join("").trimEnd());
-      remaining = remaining.slice(split);
-      while (remaining[0] && /^\s$/u.test(remaining[0])) remaining.shift();
+      // Width is clamped above the widest supported grapheme, but retain a
+      // progress guard so malformed width input cannot loop forever.
+      if (end === start) end++;
+      const split =
+        lastSpace >= start + Math.floor((end - start) / 2) ? lastSpace : end;
+      lines.push(source.slice(start, split).join("").trimEnd());
+      start = split;
+      while (start < source.length && /^\s$/u.test(source[start])) start++;
     }
-    lines.push(remaining.join(""));
   }
   return lines;
 }

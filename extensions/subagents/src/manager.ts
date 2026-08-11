@@ -160,6 +160,8 @@ export interface SubagentManagerShape {
   cancel(
     ids: ReadonlyArray<string>,
   ): Effect.Effect<ReadonlyArray<CancelResult>>;
+  /** Abort without consuming parent result delivery; resolves after settle. */
+  abort(id: string): Effect.Effect<void>;
   send(id: string, text: string): Effect.Effect<void, SendError>;
   get(id: string): Effect.Effect<SubagentSnapshot | undefined>;
   readonly list: Effect.Effect<ReadonlyArray<SubagentSnapshot>>;
@@ -580,6 +582,16 @@ const makeManager = Effect.gen(function* () {
       }
     });
 
+  const abort = (id: string) =>
+    Effect.suspend(() => {
+      const entry = entries.get(id);
+      if (!entry || entry.snapshot.status !== "running") return Effect.void;
+      return Effect.gen(function* () {
+        yield* abortEntry(entry);
+        while (entry.snapshot.status === "running") yield* nextChange;
+      });
+    });
+
   const cancel = (ids: ReadonlyArray<string>) =>
     Effect.suspend(() => {
       const unique = [...new Set(ids)];
@@ -721,6 +733,7 @@ const makeManager = Effect.gen(function* () {
     spawn,
     waitFor,
     cancel,
+    abort,
     send,
     get: (id) => Effect.sync(() => entries.get(id)?.snapshot),
     list: Effect.sync(() => [...entries.values()].map((e) => e.snapshot)),
