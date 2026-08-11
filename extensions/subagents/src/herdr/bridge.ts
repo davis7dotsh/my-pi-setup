@@ -93,6 +93,7 @@ export async function startMirrorBridge(
     let waitingForDrain = false;
     let pendingActions = 0;
     let actionQueue = Promise.resolve();
+    let closing = false;
 
     const write = (message: BridgeMessage) => {
       if (socket.destroyed) return;
@@ -136,7 +137,9 @@ export async function startMirrorBridge(
       code: Extract<BridgeMessage, { type: "error" }>["code"],
       message: string,
     ) => {
+      if (closing) return;
       write(errorMessage(code, message));
+      closing = true;
       socket.end();
     };
 
@@ -216,6 +219,7 @@ export async function startMirrorBridge(
     });
 
     socket.on("data", (chunk) => {
+      if (closing) return;
       buffer += chunk;
       while (true) {
         const newline = buffer.indexOf("\n");
