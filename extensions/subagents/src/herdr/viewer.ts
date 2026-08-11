@@ -7,8 +7,8 @@ import {
   MIRROR_PROTOCOL_VERSION,
   parseBridgeMessage,
 } from "./protocol.ts";
-import { consumeViewerInput } from "./viewer-input.ts";
-import { renderMirrorFrame } from "./viewer-render.ts";
+import { consumeViewerInput, type ViewerEscapeState } from "./viewer-input.ts";
+import { renderMirrorFrame, sanitizeTerminalText } from "./viewer-render.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -39,6 +39,7 @@ delete reportEnvironment.FABLE_MIRROR_SOCKET;
 let snapshot: SubagentSnapshot | undefined;
 let notice = "Connecting to parent…";
 let input = "";
+let inputEscapeState: ViewerEscapeState = "none";
 let requestSequence = 0;
 let sequence = 0;
 let lastReported = "";
@@ -57,8 +58,14 @@ function runHerdr(args: string[]) {
 }
 
 function reportIdentity(current: SubagentSnapshot) {
-  const model = current.meta.modelLabel ?? initialModel;
-  const title = `↳ ${parentLabel} · ${current.id} · ${model}`;
+  const model = sanitizeTerminalText(
+    current.meta.modelLabel ?? initialModel,
+  ).trim();
+  const childId = sanitizeTerminalText(current.id).trim();
+  const safeParentLabel = sanitizeTerminalText(parentLabel).trim();
+  const safeParentPane = sanitizeTerminalText(parentPaneId).trim();
+  const safeParentSession = sanitizeTerminalText(parentSessionId).trim();
+  const title = `↳ ${safeParentLabel} · ${childId} · ${model}`;
   process.stdout.write(`\u001b]0;${title}\u0007`);
   if (sequence === 0) {
     runHerdr([
@@ -72,7 +79,7 @@ function reportIdentity(current: SubagentSnapshot) {
       "--seq",
       String(++sequence),
       "--agent-session-id",
-      `${parentSessionId}:${current.id}`,
+      `${safeParentSession}:${childId}`,
       "--session-start-source",
       "parent-bridge",
     ]);
@@ -89,11 +96,11 @@ function reportIdentity(current: SubagentSnapshot) {
       "--title",
       title,
       "--token",
-      `parent=${parentPaneId}`,
+      `parent=${safeParentPane}`,
       "--token",
-      `parent_session=${parentSessionId}`,
+      `parent_session=${safeParentSession}`,
       "--token",
-      `subagent=${current.id}`,
+      `subagent=${childId}`,
       "--token",
       `model=${model}`,
       "--seq",
@@ -120,11 +127,11 @@ function reportIdentity(current: SubagentSnapshot) {
     "--state",
     state,
     "--message",
-    current.errorText ?? current.status,
+    sanitizeTerminalText(current.errorText ?? current.status),
     "--seq",
     String(++sequence),
     "--agent-session-id",
-    `${parentSessionId}:${current.id}`,
+    `${safeParentSession}:${childId}`,
   ]);
 }
 
@@ -158,6 +165,7 @@ function closeViewer(message: string) {
 }
 
 function connect() {
+  if (closing) return;
   let incoming = "";
   const current = net.createConnection(socketPath);
   socket = current;
@@ -256,44 +264,58 @@ function connect() {
   });
 }
 
-function sendAction(action: "send" | "abort" | "focus-parent", text?: string) {
-  if (!socket || socket.destroyed) {
+async function sendAction(
+  action: "send" | "abort" | "focus-parent",
+  text?: string,
+) {
+  const active = socket;
+  if (!active || active.destroyed) {
     notice = "Parent bridge is disconnected; action was not sent";
     render();
     return;
   }
   const requestId = `viewer-${++requestSequence}`;
-  socket.write(
-    `${JSON.stringify({
-      version: MIRROR_PROTOCOL_VERSION,
-      type: "action",
-      requestId,
-      action,
-      ...(action === "send" ? { text } : {}),
-    })}\n`,
-  );
+  const line = `${JSON.stringify({
+    version: MIRROR_PROTOCOL_VERSION,
+    type: "action",
+    requestId,
+    action,
+    ...(action === "send" ? { text } : {}),
+  })}\n`;
+  await new Promise<void>((resolve) => active.write(line, () => resolve()));
   notice = action === "focus-parent" ? "Focusing parent…" : "Sending action…";
   render();
 }
 
 if (process.stdin.isTTY) {
   process.stdin.setRawMode(true);
+  process.stdin.setEncoding("utf8");
   process.stdin.resume();
-  process.stdin.on("data", (data: Buffer) => {
-    const consumed = consumeViewerInput(input, data.toString("utf8"));
-    input = consumed.input;
-    for (const command of consumed.commands) {
-      if (command.action === "close") {
-        closing = true;
-        socket?.destroy();
-        process.exit(0);
-      } else if (command.action === "send") {
-        sendAction("send", command.text);
-      } else {
-        sendAction(command.action);
+  let inputQueue = Promise.resolve();
+  process.stdin.on("data", (text: string) => {
+    inputQueue = inputQueue.then(async () => {
+      const consumed = consumeViewerInput(input, text, inputEscapeState);
+      input = consumed.input;
+      inputEscapeState = consumed.escapeState;
+      for (const command of consumed.commands) {
+        if (command.action === "close") {
+          closing = true;
+          const active = socket;
+          if (active && !active.destroyed) {
+            await new Promise<void>((resolve) => active.end(resolve));
+          } else {
+            closeViewer("Mirror closed");
+          }
+          return;
+        }
+        if (command.action === "send") {
+          await sendAction("send", command.text);
+        } else {
+          await sendAction(command.action);
+        }
       }
-    }
-    render();
+      render();
+    });
   });
 }
 connect();

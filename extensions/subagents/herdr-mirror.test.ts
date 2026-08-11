@@ -527,14 +527,19 @@ test("queued viewer actions stop when that viewer disconnects", async () => {
     text: "first",
   });
   await started;
-  client.send({
-    version: 1,
-    type: "action",
-    requestId: "second",
-    action: "send",
-    text: "second",
-  });
-  client.socket.destroy();
+  const disconnected = new Promise<void>((resolve) =>
+    client.socket.once("close", () => resolve()),
+  );
+  client.socket.end(
+    `${JSON.stringify({
+      version: 1,
+      type: "action",
+      requestId: "second",
+      action: "send",
+      text: "second",
+    })}\n`,
+  );
+  await disconnected;
   releaseFirst();
   await new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -718,10 +723,31 @@ test("viewer input parser handles batched text and controls", async () => {
   assert.deepEqual(consumeViewerInput("", "continue this\r"), {
     input: "",
     commands: [{ action: "send", text: "continue this" }],
+    escapeState: "none",
   });
   assert.deepEqual(consumeViewerInput("draft", "\u007f!\u0010\u0018"), {
     input: "draf!",
     commands: [{ action: "focus-parent" }, { action: "abort" }],
+    escapeState: "none",
+  });
+  assert.deepEqual(consumeViewerInput("", "\u001b[A\u0018"), {
+    input: "",
+    commands: [{ action: "abort" }],
+    escapeState: "none",
+  });
+  const splitEscape = consumeViewerInput("", "\u001b[");
+  assert.deepEqual(consumeViewerInput("", "A\u0010", splitEscape.escapeState), {
+    input: "",
+    commands: [{ action: "focus-parent" }],
+    escapeState: "none",
+  });
+  assert.deepEqual(consumeViewerInput("", "send before close\r\u0004"), {
+    input: "",
+    commands: [
+      { action: "send", text: "send before close" },
+      { action: "close" },
+    ],
+    escapeState: "none",
   });
 });
 

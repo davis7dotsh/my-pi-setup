@@ -155,15 +155,27 @@ export default function (pi: ExtensionAPI) {
   let sessionContext: ExtensionContext | undefined;
   let ui: ExtensionUIContext | undefined;
   let unsubStatus: (() => void) | undefined;
+  let sessionGeneration = 0;
+  let mirrorFrontend: MirrorFrontend | undefined;
   let mirrorFrontendPromise: Promise<MirrorFrontend | undefined> | undefined;
   const resultDelivery = createDeferredResultDelivery<SubagentSnapshot>();
 
   const getRuntime = () => (runtime ??= createSubagentRuntime());
 
-  const startMirrorFrontend = async (manager: SubagentManagerShape) => {
+  const closeMirrorFrontend = async (frontend: MirrorFrontend) => {
+    await frontend.coordinator.close().catch(() => undefined);
+    await frontend.bridge.close().catch(() => undefined);
+  };
+
+  const startMirrorFrontend = async (
+    manager: SubagentManagerShape,
+    activeRuntime: SubagentRuntime,
+    generation: number,
+  ) => {
+    const isCurrentSession = () =>
+      generation === sessionGeneration && sessionContext !== undefined;
     const adapter = await createHerdrMirrorAdapterFromEnvironment();
-    if (!adapter) return undefined;
-    const activeRuntime = getRuntime();
+    if (!adapter || !isCurrentSession()) return undefined;
     const bridge = await startMirrorBridge(manager.view, {
       actions: {
         send: (id, text) => runTool(activeRuntime, manager.send(id, text)),
@@ -171,6 +183,10 @@ export default function (pi: ExtensionAPI) {
         focusParent: () => adapter.focusParent(),
       },
     });
+    if (!isCurrentSession()) {
+      await bridge.close();
+      return undefined;
+    }
     try {
       const coordinator = await startHerdrMirrorCoordinator({
         view: manager.view,
@@ -181,7 +197,12 @@ export default function (pi: ExtensionAPI) {
           "src/herdr/viewer.ts",
         ),
       });
-      return { bridge, coordinator };
+      const frontend = { bridge, coordinator };
+      if (!isCurrentSession()) {
+        await closeMirrorFrontend(frontend);
+        return undefined;
+      }
+      return frontend;
     } catch {
       await bridge.close();
       return undefined;
@@ -190,18 +211,37 @@ export default function (pi: ExtensionAPI) {
 
   /** Resolve the manager service once per runtime and wire the extension hooks. */
   const getManager = () => {
-    managerPromise ??= getRuntime()
-      .runPromise(SubagentManager)
-      .then((manager) => {
-        manager.view.setOnSettled(onSettled);
-        unsubStatus?.();
-        unsubStatus = manager.view.subscribe(() => updateStatus(manager));
-        updateStatus(manager);
-        mirrorFrontendPromise ??= startMirrorFrontend(manager).catch(
-          () => undefined,
-        );
-        return manager;
-      });
+    if (!managerPromise) {
+      const activeRuntime = getRuntime();
+      const generation = sessionGeneration;
+      managerPromise = activeRuntime
+        .runPromise(SubagentManager)
+        .then((manager) => {
+          manager.view.setOnSettled(onSettled);
+          unsubStatus?.();
+          unsubStatus = manager.view.subscribe(() => updateStatus(manager));
+          updateStatus(manager);
+          mirrorFrontendPromise ??= startMirrorFrontend(
+            manager,
+            activeRuntime,
+            generation,
+          ).catch(() => undefined);
+          void mirrorFrontendPromise
+            .then(async (frontend) => {
+              if (!frontend) return;
+              if (
+                generation === sessionGeneration &&
+                sessionContext !== undefined
+              ) {
+                mirrorFrontend = frontend;
+              } else {
+                await closeMirrorFrontend(frontend);
+              }
+            })
+            .catch(() => undefined);
+          return manager;
+        });
+    }
     return managerPromise;
   };
 
@@ -285,6 +325,7 @@ export default function (pi: ExtensionAPI) {
   };
 
   pi.on("session_start", (_event, ctx) => {
+    sessionGeneration++;
     sessionContext = ctx;
     if (ctx.hasUI) ui = ctx.ui;
   });
@@ -292,6 +333,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("agent_settled", flushResults);
 
   pi.on("session_shutdown", async () => {
+    sessionGeneration++;
     sessionContext = undefined;
     resultDelivery.clear();
     unsubStatus?.();
@@ -299,16 +341,17 @@ export default function (pi: ExtensionAPI) {
     ui?.setStatus("subagents", undefined);
     ui = undefined;
     const closing = runtime;
-    const closingMirror = mirrorFrontendPromise;
+    const closingMirror = mirrorFrontend;
     runtime = undefined;
     managerPromise = undefined;
+    mirrorFrontend = undefined;
     mirrorFrontendPromise = undefined;
-    const mirror = await closingMirror?.catch(() => undefined);
-    await mirror?.coordinator.close();
-    await mirror?.bridge.close();
-    // Disposing the runtime runs the manager finalizer, which tears down all
-    // subagent scopes (and, later, their real child processes).
-    await closing?.dispose();
+    // Runtime disposal and optional pane cleanup are independent. Never keep
+    // child processes alive while a Herdr command or startup probe is blocked.
+    await Promise.all([
+      closing?.dispose(),
+      closingMirror ? closeMirrorFrontend(closingMirror) : undefined,
+    ]);
   });
 
   // --- Tools -------------------------------------------------------------

@@ -2,11 +2,44 @@ export type ViewerInputCommand =
   | { readonly action: "send"; readonly text: string }
   | { readonly action: "abort" | "focus-parent" | "close" };
 
-export function consumeViewerInput(current: string, chunk: string) {
+export type ViewerEscapeState =
+  "none" | "escape" | "csi" | "osc" | "osc-escape";
+
+export function consumeViewerInput(
+  current: string,
+  chunk: string,
+  initialEscapeState: ViewerEscapeState = "none",
+) {
   let input = current;
+  let escapeState = initialEscapeState;
   const commands: ViewerInputCommand[] = [];
   for (const character of chunk) {
-    if (character === "\u001b") break;
+    if (escapeState === "escape") {
+      escapeState =
+        character === "[" || character === "O"
+          ? "csi"
+          : character === "]"
+            ? "osc"
+            : "none";
+      continue;
+    }
+    if (escapeState === "csi") {
+      if (/^[\u0040-\u007e]$/.test(character)) escapeState = "none";
+      continue;
+    }
+    if (escapeState === "osc") {
+      if (character === "\u0007") escapeState = "none";
+      else if (character === "\u001b") escapeState = "osc-escape";
+      continue;
+    }
+    if (escapeState === "osc-escape") {
+      escapeState = character === "\\" ? "none" : "osc";
+      continue;
+    }
+    if (character === "\u001b") {
+      escapeState = "escape";
+      continue;
+    }
     if (character === "\u0004" || character === "\u0003") {
       commands.push({ action: "close" });
       continue;
@@ -34,5 +67,5 @@ export function consumeViewerInput(current: string, chunk: string) {
       input += character;
     }
   }
-  return { input, commands };
+  return { input, commands, escapeState };
 }

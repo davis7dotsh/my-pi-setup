@@ -1,6 +1,6 @@
 import type { SubagentSnapshot, TranscriptPart } from "../domain.ts";
 
-function clean(text: string) {
+export function sanitizeTerminalText(text: string) {
   return text
     .replace(
       // eslint-disable-next-line no-control-regex
@@ -10,6 +10,8 @@ function clean(text: string) {
     .replaceAll("\t", "  ")
     .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "");
 }
+
+const clean = sanitizeTerminalText;
 
 const graphemeSegmenter = new Intl.Segmenter(undefined, {
   granularity: "grapheme",
