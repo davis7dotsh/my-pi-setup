@@ -163,7 +163,14 @@ export default function (pi: ExtensionAPI) {
   const startMirrorFrontend = async (manager: SubagentManagerShape) => {
     const adapter = await createHerdrMirrorAdapterFromEnvironment();
     if (!adapter) return undefined;
-    const bridge = await startMirrorBridge(manager.view);
+    const activeRuntime = getRuntime();
+    const bridge = await startMirrorBridge(manager.view, {
+      actions: {
+        send: (id, text) => runTool(activeRuntime, manager.send(id, text)),
+        abort: async (id) => manager.view.requestAbort(id),
+        focusParent: () => adapter.focusParent(),
+      },
+    });
     try {
       const coordinator = await startHerdrMirrorCoordinator({
         view: manager.view,

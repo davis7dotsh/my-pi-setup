@@ -63,6 +63,7 @@ export function renderMirrorFrame(
     readonly columns: number;
     readonly rows: number;
     readonly input: string;
+    readonly notice?: string;
   },
 ) {
   const width = Math.max(20, options.columns);
@@ -82,7 +83,9 @@ export function renderMirrorFrame(
     divider,
   ];
 
-  if (snapshot.errorText) lines.push(`error: ${clean(snapshot.errorText)}`);
+  const pinned = snapshot.errorText
+    ? [`error: ${clean(snapshot.errorText)}`]
+    : [];
   for (const item of snapshot.transcript) {
     if (item.kind === "user") {
       lines.push(...wrap(`> ${item.text}`, width));
@@ -118,12 +121,23 @@ export function renderMirrorFrame(
   const footer = [
     divider,
     `> ${clean(options.input)}`.slice(0, width),
-    "Enter send · Ctrl-X abort · Ctrl-P parent · Ctrl-D close mirror".slice(
-      0,
-      width,
-    ),
+    [
+      options.notice,
+      "Enter send · Ctrl-X abort · Ctrl-P parent · Ctrl-D close mirror",
+    ]
+      .filter(Boolean)
+      .join(" · ")
+      .slice(0, width),
   ];
-  const bodyCapacity = Math.max(1, options.rows - footer.length - 3);
+  const bodyCapacity = Math.max(
+    1,
+    options.rows - footer.length - 3 - pinned.length,
+  );
   const body = lines.slice(3);
-  return [...lines.slice(0, 3), ...body.slice(-bodyCapacity), ...footer];
+  return [
+    ...lines.slice(0, 3),
+    ...pinned,
+    ...body.slice(-bodyCapacity),
+    ...footer,
+  ];
 }

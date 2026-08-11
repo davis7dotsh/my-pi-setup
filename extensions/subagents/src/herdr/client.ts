@@ -1,22 +1,19 @@
 import { execFile } from "node:child_process";
 import { access } from "node:fs/promises";
+import path from "node:path";
 import { promisify } from "node:util";
 import type {
   HerdrMirrorAdapter,
   HerdrParentIdentity,
-  MirrorHandle,
   MirrorLaunch,
 } from "./coordinator.ts";
 
 const execFileAsync = promisify(execFile);
 
-interface HerdrResponse<T> {
-  readonly result: T;
-}
+export type HerdrCommandRunner = (args: string[]) => Promise<string>;
 
-interface CreatedTabResult {
-  readonly root_pane: { readonly pane_id: string };
-  readonly tab: { readonly tab_id: string };
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function resolveHerdrBinary(env: NodeJS.ProcessEnv) {
@@ -30,12 +27,28 @@ async function resolveHerdrBinary(env: NodeJS.ProcessEnv) {
   }
 }
 
-function parseResponse<T>(stdout: string): T {
-  const decoded = JSON.parse(stdout) as HerdrResponse<T>;
-  if (!decoded || typeof decoded !== "object" || !("result" in decoded)) {
+function parseCommandResult(stdout: string) {
+  const decoded: unknown = JSON.parse(stdout);
+  if (!isRecord(decoded) || !isRecord(decoded.result)) {
     throw new Error("Herdr returned an unexpected response.");
   }
   return decoded.result;
+}
+
+function parseCreatedTab(stdout: string) {
+  const result = parseCommandResult(stdout);
+  if (
+    !isRecord(result.root_pane) ||
+    typeof result.root_pane.pane_id !== "string" ||
+    !isRecord(result.tab) ||
+    typeof result.tab.tab_id !== "string"
+  ) {
+    throw new Error("Herdr did not return the created pane and tab ids.");
+  }
+  return {
+    rootPaneId: result.root_pane.pane_id,
+    tabId: result.tab.tab_id,
+  };
 }
 
 function safeLabel(text: string, fallback: string) {
@@ -45,54 +58,77 @@ function safeLabel(text: string, fallback: string) {
 
 export async function createHerdrMirrorAdapterFromEnvironment(
   env: NodeJS.ProcessEnv = process.env,
-): Promise<HerdrMirrorAdapter | undefined> {
-  if (
-    env.HERDR_ENV !== "1" ||
-    !env.HERDR_PANE_ID ||
-    !env.HERDR_WORKSPACE_ID ||
-    !env.HERDR_SOCKET_PATH
-  ) {
+  commandRunner?: HerdrCommandRunner,
+) {
+  if (env.HERDR_ENV !== "1" || !env.HERDR_PANE_ID || !env.HERDR_SOCKET_PATH) {
     return undefined;
   }
 
-  const herdr = await resolveHerdrBinary(env);
-  const run = async (args: string[]) => {
-    const { stdout } = await execFileAsync(herdr, args, {
-      env,
-      maxBuffer: 4 * 1024 * 1024,
-    });
-    return stdout;
-  };
+  let runHerdrCommand: HerdrCommandRunner;
+  if (commandRunner) {
+    runHerdrCommand = commandRunner;
+  } else {
+    const herdr = await resolveHerdrBinary(env);
+    runHerdrCommand = async (args) => {
+      const { stdout } = await execFileAsync(herdr, args, {
+        env,
+        maxBuffer: 4 * 1024 * 1024,
+        timeout: 5_000,
+      });
+      return stdout;
+    };
+  }
 
   let parentLabel = `Pi ${env.HERDR_PANE_ID}`;
+  let workspaceId = env.HERDR_WORKSPACE_ID;
+  let parentSessionId: string | undefined;
   try {
-    const pane = parseResponse<{
-      pane?: { terminal_title_stripped?: string; title?: string };
-    }>(await run(["pane", "get", env.HERDR_PANE_ID]));
-    parentLabel = safeLabel(
-      pane.pane?.title ?? pane.pane?.terminal_title_stripped ?? "",
-      parentLabel,
+    const result = parseCommandResult(
+      await runHerdrCommand(["pane", "get", env.HERDR_PANE_ID]),
     );
+    const pane = isRecord(result.pane) ? result.pane : undefined;
+    if (pane) {
+      workspaceId =
+        typeof pane.workspace_id === "string" ? pane.workspace_id : workspaceId;
+      parentLabel = safeLabel(
+        typeof pane.title === "string"
+          ? pane.title
+          : typeof pane.terminal_title_stripped === "string"
+            ? pane.terminal_title_stripped
+            : "",
+        parentLabel,
+      );
+      const agentSession = isRecord(pane.agent_session)
+        ? pane.agent_session
+        : undefined;
+      if (typeof agentSession?.value === "string") {
+        parentSessionId = path
+          .basename(agentSession.value)
+          .replace(/\.jsonl$/, "");
+      }
+    }
   } catch {
-    // Pane metadata is display-only. The stable pane id remains sufficient.
+    // The env-provided workspace remains a safe fallback on older Herdr builds.
   }
+  if (!workspaceId) return undefined;
 
   const parent: HerdrParentIdentity = {
     paneId: env.HERDR_PANE_ID,
-    workspaceId: env.HERDR_WORKSPACE_ID,
+    workspaceId,
     label: parentLabel,
+    sessionId: parentSessionId,
   };
 
   return {
     parent,
-    async createMirror(launch: MirrorLaunch): Promise<MirrorHandle> {
+    async createMirror(launch: MirrorLaunch) {
       const label = safeLabel(`Fable · ${launch.title}`, "Fable");
-      const created = parseResponse<CreatedTabResult>(
-        await run([
+      const created = parseCreatedTab(
+        await runHerdrCommand([
           "tab",
           "create",
           "--workspace",
-          launch.workspaceId,
+          launch.parent.workspaceId,
           "--cwd",
           launch.cwd,
           "--label",
@@ -104,20 +140,22 @@ export async function createHerdrMirrorAdapterFromEnvironment(
           "--env",
           `FABLE_MIRROR_SUBAGENT_ID=${launch.subagentId}`,
           "--env",
-          `FABLE_MIRROR_PARENT_PANE_ID=${launch.parentPaneId}`,
+          `FABLE_MIRROR_PARENT_PANE_ID=${launch.parent.paneId}`,
           "--env",
-          `FABLE_MIRROR_PARENT_LABEL=${launch.parentLabel}`,
+          `FABLE_MIRROR_PARENT_LABEL=${launch.parent.label}`,
+          "--env",
+          `FABLE_MIRROR_PARENT_SESSION_ID=${launch.parent.sessionId ?? ""}`,
           "--env",
           `FABLE_MIRROR_MODEL=${launch.model}`,
           "--no-focus",
         ]),
       );
       const handle = {
-        paneId: created.root_pane.pane_id,
-        tabId: created.tab.tab_id,
+        paneId: created.rootPaneId,
+        tabId: created.tabId,
       };
       try {
-        await run([
+        await runHerdrCommand([
           "pane",
           "run",
           handle.paneId,
@@ -127,16 +165,18 @@ export async function createHerdrMirrorAdapterFromEnvironment(
           launch.viewerPath,
         ]);
       } catch (error) {
-        await run(["tab", "close", handle.tabId]).catch(() => undefined);
+        await runHerdrCommand(["tab", "close", handle.tabId]).catch(
+          () => undefined,
+        );
         throw error;
       }
       return handle;
     },
     async closeMirror(handle) {
-      await run(["tab", "close", handle.tabId]);
+      await runHerdrCommand(["tab", "close", handle.tabId]);
     },
     async focusParent() {
-      await run(["agent", "focus", parent.paneId]);
+      await runHerdrCommand(["agent", "focus", parent.paneId]);
     },
-  };
+  } satisfies HerdrMirrorAdapter;
 }

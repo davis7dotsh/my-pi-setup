@@ -57,6 +57,30 @@ function task(prompt: string): SpawnTask {
   return { prompt, title: "test", cwd: process.cwd(), parent };
 }
 
+async function waitForSnapshot(
+  manager: SubagentManagerShape,
+  id: string,
+  predicate: (
+    snapshot: NonNullable<ReturnType<SubagentManagerShape["view"]["get"]>>,
+  ) => boolean,
+) {
+  const current = manager.view.get(id);
+  if (current && predicate(current)) return current;
+  return new Promise<NonNullable<typeof current>>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      unsubscribe();
+      reject(new Error(`Timed out waiting for ${id}`));
+    }, 5_000);
+    const unsubscribe = manager.view.subscribeTo(id, () => {
+      const snapshot = manager.view.get(id);
+      if (!snapshot || !predicate(snapshot)) return;
+      clearTimeout(timeout);
+      unsubscribe();
+      resolve(snapshot);
+    });
+  });
+}
+
 async function withManager(
   run: (
     manager: SubagentManagerShape,
@@ -253,6 +277,91 @@ test("idle restarts respect the concurrency cap", async () => {
   });
 });
 
+test("frontend abort settles once without consuming parent delivery", async () => {
+  await withManager(async (manager, runtime) => {
+    const settled: Array<{ id: string; consumed: boolean }> = [];
+    manager.view.setOnSettled((snap, consumed) =>
+      settled.push({ id: snap.id, consumed }),
+    );
+    const snap = await runTool(
+      runtime,
+      manager.spawn("claude", task("Abort from a frontend")),
+    );
+
+    manager.view.requestAbort(snap.id);
+    manager.view.requestAbort(snap.id);
+    const aborted = await waitForSnapshot(
+      manager,
+      snap.id,
+      (current) => current.status === "error",
+    );
+
+    assert.equal(aborted.errorText, "Run was aborted");
+    assert.deepEqual(settled, [{ id: snap.id, consumed: false }]);
+  });
+});
+
+test("frontend abort is consumed once when subagent_wait is active", async () => {
+  await withManager(async (manager, runtime) => {
+    const settled: Array<{ id: string; consumed: boolean }> = [];
+    manager.view.setOnSettled((snap, consumed) =>
+      settled.push({ id: snap.id, consumed }),
+    );
+    const snap = await runTool(
+      runtime,
+      manager.spawn("claude", task("Abort while waiting")),
+    );
+    let signalPending!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      signalPending = resolve;
+    });
+    const waiting = runtime.runPromise(
+      manager.waitFor([snap.id], () => signalPending()),
+    );
+    await pending;
+
+    manager.view.requestAbort(snap.id);
+    await waiting;
+
+    assert.deepEqual(settled, [{ id: snap.id, consumed: true }]);
+  });
+});
+
+test("send while running queues a steer on the same session", async () => {
+  await withManager(async (manager, runtime) => {
+    const snap = await runTool(
+      runtime,
+      manager.spawn("claude", task("First turn")),
+    );
+    await waitForSnapshot(
+      manager,
+      snap.id,
+      (current) => current.liveTools.length > 0,
+    );
+    const nativeSessionId = manager.view.get(snap.id)?.meta.nativeSessionId;
+
+    await runTool(runtime, manager.send(snap.id, "Queued steer"));
+    const queued = await waitForSnapshot(manager, snap.id, (current) =>
+      current.queued.some((message) => message.text === "Queued steer"),
+    );
+    assert.equal(queued.status, "running");
+
+    await waitForSnapshot(
+      manager,
+      snap.id,
+      (current) =>
+        current.status === "running" &&
+        current.transcript.some(
+          (item) => item.kind === "user" && item.text === "Queued steer",
+        ),
+    );
+    await runTool(runtime, manager.waitFor([snap.id]));
+    const done = manager.view.get(snap.id);
+    assert.equal(done?.meta.nativeSessionId, nativeSessionId);
+    assert.match(done?.finalText ?? "", /Queued steer/);
+  });
+});
+
 test("send steers an idle subagent into another turn", async () => {
   await withManager(async (manager, runtime) => {
     const snap = await runTool(
@@ -263,6 +372,7 @@ test("send steers an idle subagent into another turn", async () => {
     const afterFirst = manager.view.get(snap.id);
     assert.equal(afterFirst?.status, "done");
 
+    const nativeSessionId = afterFirst?.meta.nativeSessionId;
     await runTool(runtime, manager.send(snap.id, "Second turn"));
     // The fresh run flips the status back to running...
     while (manager.view.get(snap.id)?.status !== "running") {
@@ -271,6 +381,7 @@ test("send steers an idle subagent into another turn", async () => {
     await runTool(runtime, manager.waitFor([snap.id]));
     const afterSecond = manager.view.get(snap.id);
     assert.equal(afterSecond?.status, "done");
+    assert.equal(afterSecond?.meta.nativeSessionId, nativeSessionId);
     assert.match(afterSecond?.finalText ?? "", /Second turn/);
   });
 });

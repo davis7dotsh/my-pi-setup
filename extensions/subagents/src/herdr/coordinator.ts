@@ -6,6 +6,7 @@ export interface HerdrParentIdentity {
   readonly paneId: string;
   readonly workspaceId: string;
   readonly label: string;
+  readonly sessionId?: string;
 }
 
 export interface MirrorLaunch {
@@ -13,9 +14,7 @@ export interface MirrorLaunch {
   readonly title: string;
   readonly model: string;
   readonly cwd: string;
-  readonly parentPaneId: string;
-  readonly parentLabel: string;
-  readonly workspaceId: string;
+  readonly parent: HerdrParentIdentity;
   readonly socketPath: string;
   readonly token: string;
   readonly viewerPath: string;
@@ -67,11 +66,9 @@ export async function startHerdrMirrorCoordinator(options: {
             title: snapshot.title,
             model: snapshot.meta.modelLabel ?? "Fable",
             cwd: snapshot.cwd,
-            parentPaneId: options.adapter.parent.paneId,
-            parentLabel: options.adapter.parent.label,
-            workspaceId: options.adapter.parent.workspaceId,
+            parent: options.adapter.parent,
             socketPath: options.bridge.socketPath,
-            token: options.bridge.token,
+            token: options.bridge.credentialFor(snapshot.id),
             viewerPath: options.viewerPath,
           });
           if (closed) {

@@ -5,7 +5,7 @@ import type { SubagentSnapshot } from "../domain.ts";
 import {
   MAX_SNAPSHOT_MESSAGE_BYTES,
   MIRROR_PROTOCOL_VERSION,
-  type BridgeMessage,
+  parseBridgeMessage,
 } from "./protocol.ts";
 import { renderMirrorFrame } from "./viewer-render.ts";
 
@@ -27,18 +27,24 @@ const subagentId = requiredEnvironment("FABLE_MIRROR_SUBAGENT_ID");
 const paneId = requiredEnvironment("HERDR_PANE_ID");
 const parentPaneId = process.env.FABLE_MIRROR_PARENT_PANE_ID ?? "parent";
 const parentLabel = process.env.FABLE_MIRROR_PARENT_LABEL ?? parentPaneId;
+const parentSessionId =
+  process.env.FABLE_MIRROR_PARENT_SESSION_ID || parentPaneId;
 const initialModel = process.env.FABLE_MIRROR_MODEL ?? "Fable";
 const herdr = process.env.HERDR_BIN ?? "/opt/homebrew/bin/herdr";
 
 let snapshot: SubagentSnapshot | undefined;
 let notice = "Connecting to parent…";
+let input = "";
+let requestSequence = 0;
 let sequence = 0;
 let lastReported = "";
 let reporting = Promise.resolve();
 
 function runHerdr(args: string[]) {
   reporting = reporting
-    .then(() => execFileAsync(herdr, args, { env: process.env }))
+    .then(() =>
+      execFileAsync(herdr, args, { env: process.env, timeout: 5_000 }),
+    )
     .then(() => undefined)
     .catch(() => undefined);
 }
@@ -59,7 +65,7 @@ function reportIdentity(current: SubagentSnapshot) {
       "--seq",
       String(++sequence),
       "--agent-session-id",
-      `${parentPaneId}:${current.id}`,
+      `${parentSessionId}:${current.id}`,
       "--session-start-source",
       "parent-bridge",
     ]);
@@ -77,6 +83,8 @@ function reportIdentity(current: SubagentSnapshot) {
       title,
       "--token",
       `parent=${parentPaneId}`,
+      "--token",
+      `parent_session=${parentSessionId}`,
       "--token",
       `subagent=${current.id}`,
       "--token",
@@ -109,7 +117,7 @@ function reportIdentity(current: SubagentSnapshot) {
     "--seq",
     String(++sequence),
     "--agent-session-id",
-    `${parentPaneId}:${current.id}`,
+    `${parentSessionId}:${current.id}`,
   ]);
 }
 
@@ -118,11 +126,7 @@ function render() {
   const rows = process.stdout.rows || 30;
   let lines: string[];
   if (snapshot) {
-    lines = renderMirrorFrame(snapshot, {
-      columns,
-      rows,
-      input: "[read-only mirror · use /subagents to interact]",
-    });
+    lines = renderMirrorFrame(snapshot, { columns, rows, input, notice });
   } else {
     lines = [
       "─".repeat(columns),
@@ -134,71 +138,128 @@ function render() {
   process.stdout.write(`\u001b[2J\u001b[H${lines.join("\n")}\u001b[0m`);
 }
 
-function decodeMessage(value: unknown): BridgeMessage | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const message = value as Partial<BridgeMessage>;
-  if (message.version !== MIRROR_PROTOCOL_VERSION) return undefined;
-  if (message.type === "snapshot" && message.snapshot?.id === subagentId) {
-    return message as BridgeMessage;
-  }
-  if (message.type === "error" && typeof message.message === "string") {
-    return message as BridgeMessage;
-  }
-  return undefined;
-}
+let socket: net.Socket | undefined;
+let reconnectAttempts = 0;
+let closing = false;
+let fatalProtocolError = false;
 
-const socket = net.createConnection(socketPath);
-let incoming = "";
-socket.setEncoding("utf8");
-socket.on("connect", () => {
-  socket.write(
-    `${JSON.stringify({ version: MIRROR_PROTOCOL_VERSION, type: "attach", token, subagentId })}\n`,
-  );
-});
-socket.on("data", (chunk) => {
-  incoming += chunk;
-  if (Buffer.byteLength(incoming, "utf8") > MAX_SNAPSHOT_MESSAGE_BYTES) {
-    notice = "Parent sent an oversized message";
-    render();
-    socket.destroy();
-    return;
-  }
-  while (true) {
-    const newline = incoming.indexOf("\n");
-    if (newline < 0) break;
-    const line = incoming.slice(0, newline);
-    incoming = incoming.slice(newline + 1);
-    let decoded: unknown;
-    try {
-      decoded = JSON.parse(line);
-    } catch {
-      notice = "Parent sent malformed data";
-      render();
-      continue;
-    }
-    const message = decodeMessage(decoded);
-    if (!message) {
-      notice = "Parent sent an invalid protocol message";
-    } else if (message.type === "error") {
-      notice = message.message;
-    } else {
-      snapshot = message.snapshot;
-      notice = "Connected";
-      reportIdentity(snapshot);
-    }
-    render();
-  }
-});
-socket.on("error", (error) => {
-  notice = `Mirror disconnected: ${error.message}`;
-  render();
-});
-socket.on("close", () => {
-  notice = "Parent bridge closed; this mirror will close";
+function closeViewer(message: string) {
+  notice = message;
   render();
   process.exitCode = 0;
   setTimeout(() => process.exit(), 750).unref();
-});
+}
+
+function connect() {
+  let incoming = "";
+  const current = net.createConnection(socketPath);
+  socket = current;
+  current.setEncoding("utf8");
+  current.on("connect", () => {
+    current.write(
+      `${JSON.stringify({ version: MIRROR_PROTOCOL_VERSION, type: "attach", token, subagentId })}\n`,
+    );
+  });
+  current.on("data", (chunk) => {
+    incoming += chunk;
+    if (Buffer.byteLength(incoming, "utf8") > MAX_SNAPSHOT_MESSAGE_BYTES) {
+      fatalProtocolError = true;
+      notice = "Parent sent an oversized message";
+      render();
+      current.destroy();
+      return;
+    }
+    while (true) {
+      const newline = incoming.indexOf("\n");
+      if (newline < 0) break;
+      const line = incoming.slice(0, newline);
+      incoming = incoming.slice(newline + 1);
+      let decoded: unknown;
+      try {
+        decoded = JSON.parse(line);
+      } catch {
+        fatalProtocolError = true;
+        notice = "Parent sent malformed data";
+        render();
+        current.destroy();
+        return;
+      }
+      const message = parseBridgeMessage(decoded);
+      if (
+        !message ||
+        (message.type === "snapshot" && message.snapshot.id !== subagentId)
+      ) {
+        fatalProtocolError = true;
+        notice = "Parent sent an invalid protocol message";
+        render();
+        current.destroy();
+        return;
+      }
+      if (message.type === "error") {
+        fatalProtocolError = true;
+        notice = message.message;
+        render();
+        current.destroy();
+        return;
+      }
+      if (message.type === "actionResult") {
+        notice = message.ok
+          ? "Action sent"
+          : (message.error ?? "Action failed");
+      } else {
+        snapshot = message.snapshot;
+        reconnectAttempts = 0;
+        notice = "Connected";
+        reportIdentity(snapshot);
+      }
+      render();
+    }
+  });
+  current.on("error", (error) => {
+    notice = `Mirror disconnected: ${error.message}`;
+    render();
+  });
+  current.on("close", () => {
+    if (socket === current) socket = undefined;
+    if (closing || fatalProtocolError) {
+      closeViewer(
+        fatalProtocolError
+          ? `${notice}; this mirror will close`
+          : "Mirror closed",
+      );
+      return;
+    }
+    reconnectAttempts++;
+    if (reconnectAttempts > 5) {
+      closeViewer("Parent bridge stayed unavailable; this mirror will close");
+      return;
+    }
+    const delay = Math.min(2_000, 250 * 2 ** (reconnectAttempts - 1));
+    notice = `Parent bridge disconnected; reconnecting (${reconnectAttempts}/5)…`;
+    render();
+    setTimeout(connect, delay);
+  });
+}
+
+function sendAction(action: "send" | "abort" | "focus-parent", text?: string) {
+  if (!socket || socket.destroyed) {
+    notice = "Parent bridge is disconnected; action was not sent";
+    render();
+    return;
+  }
+  const requestId = `viewer-${++requestSequence}`;
+  socket.write(
+    `${JSON.stringify({
+      version: MIRROR_PROTOCOL_VERSION,
+      type: "action",
+      requestId,
+      action,
+      ...(action === "send" ? { text } : {}),
+    })}\n`,
+  );
+  notice = action === "focus-parent" ? "Focusing parent…" : "Sending action…";
+  render();
+}
 
 if (process.stdin.isTTY) {
   process.stdin.setRawMode(true);
@@ -206,11 +267,42 @@ if (process.stdin.isTTY) {
   process.stdin.on("data", (data: Buffer) => {
     const text = data.toString("utf8");
     if (text === "\u0004" || text === "\u0003") {
-      socket.destroy();
+      closing = true;
+      socket?.destroy();
       process.exit(0);
+    }
+    if (text === "\u0018") {
+      sendAction("abort");
+      return;
+    }
+    if (text === "\u0010") {
+      sendAction("focus-parent");
+      return;
+    }
+    if (text === "\r" || text === "\n") {
+      const message = input.trim();
+      if (message) {
+        input = "";
+        sendAction("send", message);
+      }
+      return;
+    }
+    if (text === "\u007f" || text === "\b") {
+      input = [...input].slice(0, -1).join("");
+      render();
+      return;
+    }
+    const printable = text.replace(/[\u0000-\u001f\u007f]/g, "");
+    if (
+      printable &&
+      Buffer.byteLength(input + printable, "utf8") <= 32 * 1024
+    ) {
+      input += printable;
+      render();
     }
   });
 }
+connect();
 process.stdout.on("resize", render);
 process.on("exit", () => {
   if (process.stdin.isTTY) process.stdin.setRawMode(false);
