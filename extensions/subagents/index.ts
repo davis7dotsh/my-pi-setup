@@ -22,6 +22,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type {
   ExtensionAPI,
@@ -74,11 +75,22 @@ import {
   runTool,
   type SubagentRuntime,
 } from "./src/runtime.ts";
+import { startMirrorBridge, type MirrorBridge } from "./src/herdr/bridge.ts";
+import { createHerdrMirrorAdapterFromEnvironment } from "./src/herdr/client.ts";
+import {
+  startHerdrMirrorCoordinator,
+  type HerdrMirrorCoordinator,
+} from "./src/herdr/coordinator.ts";
 import { openSubagentPicker, openSubagentTakeover } from "./src/ui/takeover.ts";
 
 const SUBAGENT_OUTPUT_MAX_BYTES = 24 * 1024;
 const WAIT_OUTPUT_MAX_BYTES = 48 * 1024;
 const WAIT_PER_AGENT_MAX_BYTES = 16 * 1024;
+
+interface MirrorFrontend {
+  readonly bridge: MirrorBridge;
+  readonly coordinator: HerdrMirrorCoordinator;
+}
 
 interface BtwResultData {
   readonly id: string;
@@ -143,19 +155,45 @@ export default function (pi: ExtensionAPI) {
   let sessionContext: ExtensionContext | undefined;
   let ui: ExtensionUIContext | undefined;
   let unsubStatus: (() => void) | undefined;
+  let mirrorFrontendPromise: Promise<MirrorFrontend | undefined> | undefined;
   const resultDelivery = createDeferredResultDelivery<SubagentSnapshot>();
 
   const getRuntime = () => (runtime ??= createSubagentRuntime());
+
+  const startMirrorFrontend = async (manager: SubagentManagerShape) => {
+    const adapter = await createHerdrMirrorAdapterFromEnvironment();
+    if (!adapter) return undefined;
+    const bridge = await startMirrorBridge(manager.view);
+    try {
+      const coordinator = await startHerdrMirrorCoordinator({
+        view: manager.view,
+        adapter,
+        bridge,
+        viewerPath: path.join(
+          path.dirname(fileURLToPath(import.meta.url)),
+          "src/herdr/viewer.ts",
+        ),
+      });
+      return { bridge, coordinator };
+    } catch {
+      await bridge.close();
+      return undefined;
+    }
+  };
 
   /** Resolve the manager service once per runtime and wire the extension hooks. */
   const getManager = () => {
     managerPromise ??= getRuntime()
       .runPromise(SubagentManager)
-      .then((manager) => {
+      .then(async (manager) => {
         manager.view.setOnSettled(onSettled);
         unsubStatus?.();
         unsubStatus = manager.view.subscribe(() => updateStatus(manager));
         updateStatus(manager);
+        mirrorFrontendPromise ??= startMirrorFrontend(manager).catch(
+          () => undefined,
+        );
+        await mirrorFrontendPromise;
         return manager;
       });
     return managerPromise;
@@ -255,8 +293,13 @@ export default function (pi: ExtensionAPI) {
     ui?.setStatus("subagents", undefined);
     ui = undefined;
     const closing = runtime;
+    const closingMirror = mirrorFrontendPromise;
     runtime = undefined;
     managerPromise = undefined;
+    mirrorFrontendPromise = undefined;
+    const mirror = await closingMirror?.catch(() => undefined);
+    await mirror?.coordinator.close();
+    await mirror?.bridge.close();
     // Disposing the runtime runs the manager finalizer, which tears down all
     // subagent scopes (and, later, their real child processes).
     await closing?.dispose();
