@@ -339,6 +339,22 @@ test("synthesis accepts only fully attributed validated losing-candidate augment
       sourcePaths: ["robust.txt"],
     };
     const selection = selectionFor(primary.role, [idea]);
+    const synthesisPath = path.join(lifecycle.temporaryRoot, "synthesis");
+    assert.throws(
+      () =>
+        lifecycle.validateSelection(
+          selectionFor(primary.role, [
+            {
+              ...idea,
+              sourceRole: primary.role,
+              sourcePaths: ["minimal.txt"],
+            },
+          ]),
+          frozen,
+        ),
+      /losing candidate before synthesis mutation/,
+    );
+    assert.equal(fs.existsSync(synthesisPath), false);
     assert.throws(
       () =>
         lifecycle.validateSelection(

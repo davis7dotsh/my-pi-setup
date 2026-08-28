@@ -663,6 +663,11 @@ class GitFeatureWorktreeLifecycle implements FeatureWorktreeLifecycle {
     candidates: ReadonlyArray<FrozenFeatureCandidate>,
   ) {
     for (const augmentation of selection.augmentationCandidates) {
+      if (augmentation.sourceRole === selection.primaryCandidate) {
+        throw new Error(
+          "Selection augmentation must originate from a losing candidate before synthesis mutation.",
+        );
+      }
       const source = candidates.find(
         ({ role }) => role === augmentation.sourceRole,
       );

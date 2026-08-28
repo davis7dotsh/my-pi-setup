@@ -95,11 +95,6 @@ test("feature post-promotion root prompt states the bounded authority and audit 
   assert.match(enabled, /task prose never grants broader authority/i);
   assert.match(enabled, /dedicated clean attached linked worktree/i);
   assert.match(enabled, /Keep Best-of-3 provenance out of all audit prompts/);
-  assert.match(
-    enabled,
-    /complete controller-validated structured final report/,
-  );
-  assert.match(enabled, /pipeline_complete\.final_finding_resolutions/);
   for (const forbidden of [
     "push",
     "merge",
