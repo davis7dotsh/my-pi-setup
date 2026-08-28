@@ -135,6 +135,32 @@ test("agent tree preserves parent, role, attempt, controls, and bounded transcri
   assert.equal(fake.created[1]!.session.disposed, 1);
 });
 
+test("view mutations can be disabled while controller cancellation remains available", async () => {
+  const fake = fakeFactory();
+  const tree = new AgentTreeController({ factory: fake.factory });
+  const candidate = await tree.spawn({
+    role: "candidate-minimal",
+    attempt: 1,
+    title: "candidate",
+    model: "luna",
+    cwd: "/tmp",
+    prompt: "implement",
+  });
+  const session = fake.created[0]!.session;
+  tree.disableViewMutations(candidate.id);
+
+  tree.view.requestSend(candidate.id, "restart frozen candidate");
+  tree.view.requestCancel(candidate.id);
+  await Promise.resolve();
+  assert.deepEqual(session.sends, []);
+  assert.equal(session.interrupted, 0);
+
+  await tree.cancel(candidate.id);
+  assert.equal(session.interrupted, 1);
+  assert.equal(tree.view.get(candidate.id)?.status, "cancelled");
+  await tree.dispose();
+});
+
 test("deferred roots stay idle until their first programmatic send", async () => {
   const fake = fakeFactory();
   const tree = new AgentTreeController({ factory: fake.factory });

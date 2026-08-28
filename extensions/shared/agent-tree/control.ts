@@ -55,6 +55,7 @@ export class AgentTreeController {
   private readonly listeners = new Set<() => void>();
   private readonly idListeners = new Map<string, Set<() => void>>();
   private readonly reservations = new Map<string, number>();
+  private readonly viewMutationDisabled = new Set<string>();
   private readonly factory: AgentTreeSessionFactory;
   private readonly capacity: Readonly<Record<string, number>>;
   private readonly makeId: () => string;
@@ -88,9 +89,11 @@ export class AgentTreeController {
         };
       },
       requestSend: (id, text) => {
+        if (this.viewMutationDisabled.has(id)) return;
         void this.send(id, text).catch(() => {});
       },
       requestCancel: (id) => {
+        if (this.viewMutationDisabled.has(id)) return;
         void this.cancel(id).catch(() => {});
       },
     };
@@ -307,6 +310,11 @@ export class AgentTreeController {
       entry.node.deferredPrompt = true;
       throw error;
     }
+  }
+
+  disableViewMutations(id: string) {
+    if (!this.entries.has(id)) throw new Error(`Unknown agent id "${id}".`);
+    this.viewMutationDisabled.add(id);
   }
 
   enableMutation(id: string) {

@@ -12,6 +12,7 @@ import {
 import type {
   FeatureCandidateHandoff,
   FeatureCandidateRole,
+  FeatureSelection,
   FeatureSynthesisProvenance,
 } from "./feature-best-of-three.ts";
 
@@ -47,6 +48,35 @@ function fixture() {
       }
       fs.rmSync(root, { recursive: true, force: true });
     },
+  };
+}
+
+function selectionFor(
+  primary: FeatureCandidateRole,
+  augmentationCandidates: FeatureSelection["augmentationCandidates"] = [],
+): FeatureSelection {
+  return {
+    reportType: "feature-implementation-selection-v1",
+    selectionOnlyAcknowledgement:
+      "No code was written before primary selection.",
+    comparisons: (["Minimal", "Robust", "Architectural"] as const).map(
+      (role) => ({
+        role,
+        usableBase: true,
+        criteria: {
+          correctness: `${role} correctness`,
+          acceptanceCoverage: `${role} coverage`,
+          regressionRisk: `${role} regression risk`,
+          repositoryFit: `${role} repository fit`,
+          simplicity: `${role} simplicity`,
+          maintainability: `${role} maintainability`,
+          verificationQuality: `${role} verification quality`,
+        },
+      }),
+    ),
+    primaryCandidate: primary,
+    rationale: `${primary} is the simplest reliable candidate`,
+    augmentationCandidates,
   };
 }
 
@@ -163,7 +193,12 @@ test("controller lifecycle creates same-base isolated candidates, promotes exact
       unresolvedIssues: [],
       finalCommit,
     };
-    const validated = lifecycle.validateSynthesis(synthesis, provenance);
+    const validated = lifecycle.validateSynthesis(
+      synthesis,
+      provenance,
+      selectionFor(primary.role),
+      frozen,
+    );
     lifecycle.promote(validated);
     assert.equal(git(repo.caller, ["rev-parse", "HEAD"]), finalCommit);
     assert.equal(
@@ -184,6 +219,177 @@ test("controller lifecycle creates same-base isolated candidates, promotes exact
       git(repo.caller, ["rev-parse", synthesis.branchRef]),
       finalCommit,
     );
+  } finally {
+    repo.cleanup();
+  }
+});
+
+test("candidate and synthesis changed-path handoffs reject duplicates and omissions", () => {
+  const repo = fixture();
+  try {
+    const caller = defaultFeatureGitOperations.preflight(repo.caller);
+    const lifecycle = defaultFeatureGitOperations.createLifecycle(
+      caller,
+      "run-path-sets",
+    );
+    const worktrees = lifecycle.createCandidateWorktrees();
+    const minimal = worktrees[0]!;
+    fs.writeFileSync(path.join(minimal.path, "one.txt"), "one\n");
+    fs.writeFileSync(path.join(minimal.path, "two.txt"), "two\n");
+    const head = lifecycle.commitAssignedWorktree(
+      "candidate-minimal",
+      minimal.path,
+    );
+    const invalidHandoff: FeatureCandidateHandoff = {
+      reportType: "feature-implementation-candidate-v1",
+      role: minimal.role,
+      approachSummary: "Two-path implementation",
+      changedPaths: ["one.txt", "one.txt"],
+      checks: ["fixture verification passed"],
+      assumptions: [],
+      tradeoffs: ["fixture"],
+      unresolvedIssues: [],
+      worktreePath: minimal.path,
+      branchRef: minimal.branchRef,
+      baseCommit: minimal.baseCommit,
+      candidateHeadCommit: head,
+    };
+    assert.throws(
+      () => lifecycle.freezeCandidate(minimal, invalidHandoff),
+      /changedPaths do not match/,
+    );
+
+    const validMinimal = lifecycle.freezeCandidate(minimal, {
+      ...invalidHandoff,
+      changedPaths: ["one.txt", "two.txt"],
+    });
+    const otherFrozen = worktrees
+      .slice(1)
+      .map((worktree) =>
+        lifecycle.freezeCandidate(
+          worktree,
+          commitCandidate(worktree, lifecycle),
+        ),
+      );
+    const frozen = [validMinimal, ...otherFrozen];
+    lifecycle.prepareSelectionDirectory();
+    const synthesis = lifecycle.createSynthesisWorktree(validMinimal);
+    fs.writeFileSync(path.join(synthesis.path, "fourth.txt"), "rewrite\n");
+    const finalCommit = lifecycle.commitAssignedWorktree(
+      "implementation-synthesis",
+      synthesis.path,
+    );
+    const provenance: FeatureSynthesisProvenance = {
+      reportType: "feature-implementation-synthesis-v1",
+      primaryCandidate: validMinimal.role,
+      primaryCommit: validMinimal.headCommit,
+      acceptedAugmentations: [],
+      rejectedAugmentations: [],
+      changedPaths: ["fourth.txt", "fourth.txt"],
+      checks: ["fixture verification passed"],
+      assumptions: [],
+      unresolvedIssues: [],
+      finalCommit,
+    };
+    assert.throws(
+      () =>
+        lifecycle.validateSynthesis(
+          synthesis,
+          provenance,
+          selectionFor(validMinimal.role),
+          frozen,
+        ),
+      /changedPaths do not match/,
+    );
+    assert.throws(
+      () =>
+        lifecycle.validateSynthesis(
+          synthesis,
+          { ...provenance, changedPaths: ["fourth.txt"] },
+          selectionFor(validMinimal.role),
+          frozen,
+        ),
+      /must be attributed exactly once/,
+    );
+    lifecycle.cleanup();
+  } finally {
+    repo.cleanup();
+  }
+});
+
+test("synthesis accepts only fully attributed validated losing-candidate augmentations", () => {
+  const repo = fixture();
+  try {
+    const caller = defaultFeatureGitOperations.preflight(repo.caller);
+    const lifecycle = defaultFeatureGitOperations.createLifecycle(
+      caller,
+      "run-attribution",
+    );
+    const worktrees = lifecycle.createCandidateWorktrees();
+    const frozen = worktrees.map((worktree) =>
+      lifecycle.freezeCandidate(worktree, commitCandidate(worktree, lifecycle)),
+    );
+    const primary = frozen.find(({ role }) => role === "Minimal")!;
+    const source = frozen.find(({ role }) => role === "Robust")!;
+    const idea = {
+      sourceRole: source.role,
+      idea: "Adopt the Robust edge-case fixture",
+      objectiveBenefit: "Covers a concrete missing failure path",
+      evidence: "robust.txt contains the verified fixture",
+    } as const;
+    const selection = selectionFor(primary.role, [idea]);
+    lifecycle.prepareSelectionDirectory();
+    const synthesis = lifecycle.createSynthesisWorktree(primary);
+    fs.copyFileSync(
+      path.join(source.path, "robust.txt"),
+      path.join(synthesis.path, "robust.txt"),
+    );
+    const finalCommit = lifecycle.commitAssignedWorktree(
+      "implementation-synthesis",
+      synthesis.path,
+    );
+    const provenance: FeatureSynthesisProvenance = {
+      reportType: "feature-implementation-synthesis-v1",
+      primaryCandidate: primary.role,
+      primaryCommit: primary.headCommit,
+      acceptedAugmentations: [
+        {
+          ...idea,
+          sourcePaths: ["robust.txt"],
+          changedPaths: ["robust.txt"],
+        },
+      ],
+      rejectedAugmentations: [],
+      changedPaths: ["robust.txt"],
+      checks: ["fixture verification passed"],
+      assumptions: [],
+      unresolvedIssues: [],
+      finalCommit,
+    };
+    assert.throws(
+      () =>
+        lifecycle.validateSynthesis(
+          synthesis,
+          {
+            ...provenance,
+            acceptedAugmentations: [
+              {
+                ...provenance.acceptedAugmentations[0]!,
+                idea: "Fabricated fourth implementation",
+              },
+            ],
+          },
+          selection,
+          frozen,
+        ),
+      /validated selection idea/,
+    );
+    assert.equal(
+      lifecycle.validateSynthesis(synthesis, provenance, selection, frozen)
+        .finalCommit,
+      finalCommit,
+    );
+    lifecycle.cleanup();
   } finally {
     repo.cleanup();
   }

@@ -148,28 +148,10 @@ function isFeatureInternalImplementationRole(role: string) {
   );
 }
 
-function sanitizeFeatureAuditChecks(
-  checks: ReadonlyArray<string>,
-  lifecycle: FeatureWorktreeLifecycle,
-  candidates: ReadonlyArray<FrozenFeatureCandidate>,
-) {
-  const privateValues = [
-    lifecycle.temporaryRoot,
-    ...candidates.flatMap((candidate) => [
-      candidate.path,
-      candidate.branchRef,
-      candidate.headCommit,
-    ]),
-    ...FEATURE_CANDIDATE_ROLES,
-  ].filter(Boolean);
-  return checks.map((check) =>
-    privateValues
-      .reduce(
-        (value, privateValue) => value.split(privateValue).join("[internal]"),
-        check,
-      )
-      .slice(0, 8 * 1024),
-  );
+function featureAuditVerificationSummary(reportedCheckCount: number) {
+  return [
+    `The synthesized implementation reported ${reportedCheckCount} verification check(s) before exact clean promotion; model-authored check text is withheld so independent audits receive no Best-of-3 provenance.`,
+  ];
 }
 
 interface MutableRun {
@@ -200,11 +182,35 @@ interface MutableRun {
   featureSynthesisChecks: ReadonlyArray<string>;
   auditSegment?: AuditSegment;
   auditSegmentStarting?: Promise<ReadonlyArray<AgentNodeSnapshot>>;
+  finalAuditReportDelivered: boolean;
   completion?: PipelineCompletionFacts;
   planArtifactsWritten: Map<
     string,
     { digest: string; device: number; inode: number }
   >;
+}
+
+function finalAuditResolutionHandoff(run: MutableRun) {
+  const report = run.auditSegment?.finalReport;
+  if (run.stage !== "final-resolve" || !report) return undefined;
+  return `VALIDATED_FINAL_AUDIT_REPORT_FOR_REQUIRED_RESOLUTION
+The controller received and validated the structured final audit report below. Its findings are authoritative input for this final-resolve turn even when the synthesis session has empty finalText. Evaluate and resolve every concrete finding now; fix it or reject it with specific evidence, run appropriate checks, and do not start another audit.
+${JSON.stringify(report)}
+END_VALIDATED_FINAL_AUDIT_REPORT_FOR_REQUIRED_RESOLUTION`;
+}
+
+function requireFinalFindingResolutionEvidence(
+  run: MutableRun,
+  facts: PipelineCompletionFacts,
+) {
+  const missing = (run.auditSegment?.finalReport?.findings ?? [])
+    .map(({ id }) => id)
+    .filter((id) => !facts.reports.some((summary) => summary.includes(id)));
+  if (missing.length > 0) {
+    throw new Error(
+      `pipeline_complete must account for every delivered final-audit finding ID with fix or evidence-backed rejection: ${missing.join(", ")}.`,
+    );
+  }
 }
 
 function gitHead(workingDir: string) {
@@ -539,6 +545,7 @@ export class PipelineController {
       ...(featureCaller ? { featureCaller } : {}),
       ...(featureLifecycle ? { featureLifecycle } : {}),
       featureSynthesisChecks: [],
+      finalAuditReportDelivered: false,
       planArtifactsWritten: new Map(),
     };
     this.runs.set(id, run);
@@ -689,10 +696,9 @@ export class PipelineController {
           `${worktree.role} implementation candidate`,
           (text) => {
             const handoff = parseFeatureCandidateHandoff(text);
-            return {
-              candidate: lifecycle.freezeCandidate(worktree, handoff),
-              handoff,
-            };
+            const candidate = lifecycle.freezeCandidate(worktree, handoff);
+            this.tree.disableViewMutations(agent.id);
+            return { candidate, handoff };
           },
           `Return one complete strict ${worktree.role} candidate handoff after committing and verifying the complete implementation in your assigned worktree.`,
         );
@@ -771,16 +777,19 @@ export class PipelineController {
         const provenance = parseFeatureSynthesisProvenance(text);
         return {
           provenance,
-          validated: lifecycle.validateSynthesis(synthesisWorktree, provenance),
+          validated: lifecycle.validateSynthesis(
+            synthesisWorktree,
+            provenance,
+            selection,
+            frozenCandidates.map(({ candidate }) => candidate),
+          ),
         };
       },
       "Return one strict synthesis provenance JSON object after bounded primary-based augmentation, repository verification, a clean worktree, and a distinct final commit. Do not rewrite from scratch.",
     );
     run.featureSynthesisProvenance = synthesized.provenance;
-    run.featureSynthesisChecks = sanitizeFeatureAuditChecks(
-      synthesized.provenance.checks,
-      lifecycle,
-      frozenCandidates.map(({ candidate }) => candidate),
+    run.featureSynthesisChecks = featureAuditVerificationSummary(
+      synthesized.provenance.checks.length,
     );
     lifecycle.promote(synthesized.validated);
     const cleanupFailures = lifecycle.cleanup();
@@ -2149,6 +2158,12 @@ export class PipelineController {
           "plan-pipeline completion requires a validated Luna audit synthesis.",
         );
       }
+      if (!run.finalAuditReportDelivered) {
+        throw new Error(
+          "plan-pipeline completion requires delivering the validated final audit report to final-resolve.",
+        );
+      }
+      requireFinalFindingResolutionEvidence(run, facts);
       if (!facts.planPath) {
         throw new Error("plan-pipeline completion requires plan_path.");
       }
@@ -2185,6 +2200,12 @@ export class PipelineController {
           "feature-pipeline completion requires a validated Luna audit synthesis.",
         );
       }
+      if (!run.finalAuditReportDelivered) {
+        throw new Error(
+          "feature-pipeline completion requires delivering the validated final audit report to final-resolve.",
+        );
+      }
+      requireFinalFindingResolutionEvidence(run, facts);
       completion = {
         ...facts,
         git: [...facts.git, ...this.finalGitFacts(run)],
@@ -2343,14 +2364,21 @@ export class PipelineController {
           const warning = issues.length
             ? `\n\n[Report contract violation: ${issues.join(" ")}]`
             : "";
+          const resolutionHandoff =
+            child.role === AUDIT_SYNTHESIS_ROLE
+              ? finalAuditResolutionHandoff(run)
+              : undefined;
+          if (resolutionHandoff) run.finalAuditReportDelivered = true;
           return {
             content: [
               {
                 type: "text",
-                text: `${child.id} [${child.status}] ${child.role} attempt ${child.attempt}\n\n${child.error ?? (child.finalText || "(no report yet)")}${warning}`.slice(
-                  0,
-                  24 * 1024,
-                ),
+                text:
+                  resolutionHandoff ??
+                  `${child.id} [${child.status}] ${child.role} attempt ${child.attempt}\n\n${child.error ?? (child.finalText || "(no report yet)")}${warning}`.slice(
+                    0,
+                    24 * 1024,
+                  ),
               },
             ],
             details: { runId, id: child.id, status: child.status },
@@ -2377,32 +2405,48 @@ export class PipelineController {
             params.ids,
             signal,
           );
+          const resolutionHandoff = children.some(
+            ({ role }) => role === AUDIT_SYNTHESIS_ROLE,
+          )
+            ? finalAuditResolutionHandoff(run)
+            : undefined;
+          const ordinaryReports = children
+            .map((child) => {
+              const issues =
+                child.role === AUDIT_SYNTHESIS_ROLE ||
+                isFeatureInternalImplementationRole(child.role)
+                  ? []
+                  : validatePipelineReport(
+                      run.definition,
+                      child.role,
+                      child.finalText,
+                    );
+              const warning = issues.length
+                ? `\n\n[Report contract violation: ${issues.join(" ")}]`
+                : "";
+              return `## ${child.id} · ${child.role} · attempt ${child.attempt} · ${child.status}\n\n${child.error ?? (child.finalText || "(no report)")}${warning}`;
+            })
+            .join("\n\n---\n\n")
+            .slice(0, 48 * 1024);
+          if (resolutionHandoff) run.finalAuditReportDelivered = true;
+          const childStatuses = children
+            .map(
+              (child) =>
+                `${child.id} · ${child.role} · attempt ${child.attempt} · ${child.status}`,
+            )
+            .join("\n");
           return {
             content: [
               {
                 type: "text",
-                text: children
-                  .map((child) => {
-                    const issues =
-                      child.role === AUDIT_SYNTHESIS_ROLE ||
-                      isFeatureInternalImplementationRole(child.role)
-                        ? []
-                        : validatePipelineReport(
-                            run.definition,
-                            child.role,
-                            child.finalText,
-                          );
-                    const warning = issues.length
-                      ? `\n\n[Report contract violation: ${issues.join(" ")}]`
-                      : "";
-                    return `## ${child.id} · ${child.role} · attempt ${child.attempt} · ${child.status}\n\n${child.error ?? (child.finalText || "(no report)")}${warning}`;
-                  })
-                  .join("\n\n---\n\n")
-                  .slice(0, 48 * 1024),
+                text: resolutionHandoff
+                  ? `${resolutionHandoff}\n\nSettled child statuses:\n${childStatuses}`
+                  : ordinaryReports,
               },
             ],
             details: {
               runId,
+              finalAuditReportDelivered: Boolean(resolutionHandoff),
               results: children.map((child) => ({
                 id: child.id,
                 role: child.role,

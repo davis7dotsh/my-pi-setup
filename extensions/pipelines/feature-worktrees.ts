@@ -5,6 +5,7 @@ import * as path from "node:path";
 import type {
   FeatureCandidateHandoff,
   FeatureCandidateRole,
+  FeatureSelection,
   FeatureSynthesisProvenance,
 } from "./feature-best-of-three.ts";
 
@@ -71,6 +72,8 @@ export interface FeatureWorktreeLifecycle {
   validateSynthesis(
     worktree: FeatureSynthesisWorktree,
     provenance: FeatureSynthesisProvenance,
+    selection: FeatureSelection,
+    candidates: ReadonlyArray<FrozenFeatureCandidate>,
   ): ValidatedFeatureSynthesis;
   promote(synthesis: ValidatedFeatureSynthesis): void;
   cleanup(): ReadonlyArray<string>;
@@ -315,6 +318,94 @@ function readChangedPaths(cwd: string, from: string, to: string) {
   return value ? value.split("\n").filter(Boolean) : [];
 }
 
+function equalUniquePathSets(
+  reported: ReadonlyArray<string>,
+  actual: ReadonlyArray<string>,
+) {
+  const reportedSet = new Set(reported);
+  const actualSet = new Set(actual);
+  return (
+    reportedSet.size === reported.length &&
+    actualSet.size === actual.length &&
+    reportedSet.size === actualSet.size &&
+    [...reportedSet].every((item) => actualSet.has(item))
+  );
+}
+
+function selectionAugmentationKey(value: {
+  sourceRole: FeatureCandidateRole;
+  idea: string;
+  objectiveBenefit: string;
+  evidence: string;
+}) {
+  return JSON.stringify([
+    value.sourceRole,
+    value.idea,
+    value.objectiveBenefit,
+    value.evidence,
+  ]);
+}
+
+function validateAugmentationAttribution(
+  provenance: FeatureSynthesisProvenance,
+  selection: FeatureSelection,
+  candidates: ReadonlyArray<FrozenFeatureCandidate>,
+  actualChangedPaths: ReadonlyArray<string>,
+) {
+  const selectedIdeas = new Set(
+    selection.augmentationCandidates.map(selectionAugmentationKey),
+  );
+  const usedIdeas = new Set<string>();
+  const attributedPaths: string[] = [];
+  for (const augmentation of provenance.acceptedAugmentations) {
+    if (augmentation.sourceRole === provenance.primaryCandidate) {
+      throw new Error(
+        "Accepted augmentation must originate from a losing candidate.",
+      );
+    }
+    const ideaKey = selectionAugmentationKey(augmentation);
+    if (!selectedIdeas.has(ideaKey) || usedIdeas.has(ideaKey)) {
+      throw new Error(
+        "Accepted augmentation must match exactly one validated selection idea.",
+      );
+    }
+    usedIdeas.add(ideaKey);
+    const source = candidates.find(
+      ({ role }) => role === augmentation.sourceRole,
+    );
+    if (
+      !source ||
+      !equalUniquePathSets(
+        augmentation.sourcePaths,
+        augmentation.sourcePaths.filter((item) =>
+          source.changedPaths.includes(item),
+        ),
+      )
+    ) {
+      throw new Error(
+        "Accepted augmentation sourcePaths must be unique paths from its losing candidate diff.",
+      );
+    }
+    if (
+      new Set(augmentation.changedPaths).size !==
+        augmentation.changedPaths.length ||
+      augmentation.changedPaths.some(
+        (item) => !actualChangedPaths.includes(item),
+      )
+    ) {
+      throw new Error(
+        "Accepted augmentation changedPaths must uniquely identify actual primary-to-final changes.",
+      );
+    }
+    attributedPaths.push(...augmentation.changedPaths);
+  }
+  if (!equalUniquePathSets(attributedPaths, actualChangedPaths)) {
+    throw new Error(
+      "Every primary-to-final changed path must be attributed exactly once to a validated losing-candidate idea.",
+    );
+  }
+}
+
 function boundedDiff(cwd: string, from: string, to: string, limit: number) {
   const value = requireGit(
     cwd,
@@ -477,10 +568,7 @@ class GitFeatureWorktreeLifecycle implements FeatureWorktreeLifecycle {
         `${worktree.role} candidate commit contains no implementation changes.`,
       );
     }
-    if (
-      handoff.changedPaths.length !== changedPaths.length ||
-      handoff.changedPaths.some((item) => !changedPaths.includes(item))
-    ) {
+    if (!equalUniquePathSets(handoff.changedPaths, changedPaths)) {
       throw new Error(
         `${worktree.role} candidate changedPaths do not match its committed diff.`,
       );
@@ -615,6 +703,8 @@ class GitFeatureWorktreeLifecycle implements FeatureWorktreeLifecycle {
   validateSynthesis(
     worktree: FeatureSynthesisWorktree,
     provenance: FeatureSynthesisProvenance,
+    selection: FeatureSelection,
+    candidates: ReadonlyArray<FrozenFeatureCandidate>,
   ) {
     if (this.synthesis?.path !== worktree.path) {
       throw new Error(
@@ -672,14 +762,17 @@ class GitFeatureWorktreeLifecycle implements FeatureWorktreeLifecycle {
         `Bounded augmentation diff exceeds ${SYNTHESIS_DIFF_LIMIT} UTF-8 bytes.`,
       );
     }
-    if (
-      provenance.changedPaths.length !== changedPaths.length ||
-      provenance.changedPaths.some((item) => !changedPaths.includes(item))
-    ) {
+    if (!equalUniquePathSets(provenance.changedPaths, changedPaths)) {
       throw new Error(
         "Synthesis changedPaths do not match its augmentation diff.",
       );
     }
+    validateAugmentationAttribution(
+      provenance,
+      selection,
+      candidates,
+      changedPaths,
+    );
     return { ...worktree, finalCommit, changedPaths };
   }
 

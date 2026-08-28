@@ -170,7 +170,10 @@ const augmentationSchema = Type.Object(
   {
     sourceRole: roleSchema,
     idea: text(),
+    objectiveBenefit: text(),
     evidence: text(),
+    sourcePaths: texts(1, 64),
+    changedPaths: texts(1, 64),
   },
   { additionalProperties: false },
 );
@@ -342,6 +345,24 @@ export function parseFeatureSelection(value: string) {
   if (!primary?.usableBase) {
     throw new Error("The selected primary candidate must be a usable base.");
   }
+  const augmentationKeys = result.augmentationCandidates.map((item) =>
+    JSON.stringify([
+      item.sourceRole,
+      item.idea,
+      item.objectiveBenefit,
+      item.evidence,
+    ]),
+  );
+  if (
+    result.augmentationCandidates.some(
+      ({ sourceRole }) => sourceRole === result.primaryCandidate,
+    ) ||
+    new Set(augmentationKeys).size !== augmentationKeys.length
+  ) {
+    throw new Error(
+      "Selection augmentations must be unique ideas from losing candidates.",
+    );
+  }
   return result;
 }
 
@@ -402,5 +423,5 @@ export function buildFeatureAugmentationPrompt(options: {
   synthesisWorktree: string;
   synthesisBranchRef: string;
 }) {
-  return `Primary selection is now host-validated: ${options.selection.primaryCandidate} at ${options.primary.immutableCommit}. The controller replaced your empty selection directory with a synthesis worktree at the exact same path, starting from that immutable primary commit. Synthesis branch: ${options.synthesisBranchRef}.\n\nNow perform bounded augmentation only in ${options.synthesisWorktree}. Follow the supplied repository contract and applicable skills; candidate discovery context is already complete. The final solution must evolve from the primary; do not silently write a fourth implementation from scratch. Add only concrete objectively beneficial ideas from losing candidates: a simpler local implementation, real edge-case handling/test/invariant, better boundary, or small justified structural improvement. Use none when the primary is already best. Changed paths beyond the primary are capped at 64 and the augmentation diff is host-bounded. Run repository verification, self-remediate, leave the synthesis branch clean, and use pipeline_feature_commit for the ordinary final commit; the controller creates an empty commit when no code change is beneficial so provenance still has a distinct final commit. Never mutate candidate worktrees/refs, push, merge, rebase, reset/history-rewrite, create/switch/delete branches/worktrees, deploy, or invoke other agents.\n\nValidated selection:\n${JSON.stringify(options.selection)}\n\nReturn exactly one compact ${FEATURE_SYNTHESIS_REPORT_TYPE} JSON object recording primaryCandidate, primaryCommit, acceptedAugmentations, rejectedAugmentations, changedPaths, checks, assumptions, unresolvedIssues, and finalCommit.`;
+  return `Primary selection is now host-validated: ${options.selection.primaryCandidate} at ${options.primary.immutableCommit}. The controller replaced your empty selection directory with a synthesis worktree at the exact same path, starting from that immutable primary commit. Synthesis branch: ${options.synthesisBranchRef}.\n\nNow perform bounded augmentation only in ${options.synthesisWorktree}. Follow the supplied repository contract and applicable skills; candidate discovery context is already complete. The final solution must evolve from the primary; do not silently write a fourth implementation from scratch. Add only concrete objectively beneficial ideas already listed in selection.augmentationCandidates and originating from a losing candidate: a simpler local implementation, real edge-case handling/test/invariant, better boundary, or small justified structural improvement. Use none when the primary is already best. For every accepted augmentation, copy sourceRole, idea, objectiveBenefit, and evidence exactly from the validated selection; list exact sourcePaths changed by that losing candidate and every synthesis changedPath attributable to the idea. Every primary-to-final changed path must be attributed exactly once, and acceptedAugmentations must be empty when the final commit is an empty no-augmentation commit. Changed paths beyond the primary are capped at 64 and the augmentation diff is host-bounded. Run repository verification, self-remediate, leave the synthesis branch clean, and use pipeline_feature_commit for the ordinary final commit; the controller creates an empty commit when no code change is beneficial so provenance still has a distinct final commit. Never mutate candidate worktrees/refs, push, merge, rebase, reset/history-rewrite, create/switch/delete branches/worktrees, deploy, or invoke other agents.\n\nValidated selection:\n${JSON.stringify(options.selection)}\n\nReturn exactly one compact ${FEATURE_SYNTHESIS_REPORT_TYPE} JSON object recording primaryCandidate, primaryCommit, fully attributed acceptedAugmentations, rejectedAugmentations, changedPaths, checks, assumptions, unresolvedIssues, and finalCommit.`;
 }

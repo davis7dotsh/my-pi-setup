@@ -4,7 +4,10 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
-import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionContext,
+  ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
 import type {
   AgentNodeSpec,
   AgentTreeSession,
@@ -43,6 +46,7 @@ import {
   FEATURE_IMPLEMENTATION_SYNTHESIS_ROLE,
   type FeatureCandidateHandoff,
   type FeatureCandidateRole,
+  type FeatureSelection,
   type FeatureSynthesisProvenance,
 } from "./feature-best-of-three.ts";
 import type {
@@ -214,6 +218,8 @@ class FakeFeatureLifecycle implements FeatureWorktreeLifecycle {
   validateSynthesis(
     worktree: FeatureSynthesisWorktree,
     provenance: FeatureSynthesisProvenance,
+    _selection: FeatureSelection,
+    _candidates: ReadonlyArray<FrozenFeatureCandidate>,
   ): ValidatedFeatureSynthesis {
     assert.equal(provenance.primaryCandidate, worktree.primaryRole);
     assert.equal(provenance.primaryCommit, worktree.primaryCommit);
@@ -289,6 +295,7 @@ function harness(
   let agentSequence = 0;
   let runSequence = 0;
   let rootToolNames: string[] = [];
+  const rootToolsByRun = new Map<string, ReadonlyArray<ToolDefinition>>();
   let discoverySubmitCallback:
     | ((
         runId: string,
@@ -316,10 +323,14 @@ function harness(
           if (!spec.parentId && options.rootGate) await options.rootGate;
           const isImplementationRoot =
             !spec.parentId && spec.role === "pipeline-root";
-          const orchestration = isImplementationRoot
-            ? rootTools(spec.scopeId ?? "").map((tool) => tool.name)
+          const configuredRootTools = isImplementationRoot
+            ? rootTools(spec.scopeId ?? "")
             : [];
-          if (isImplementationRoot) rootToolNames = orchestration;
+          const orchestration = configuredRootTools.map((tool) => tool.name);
+          if (isImplementationRoot) {
+            rootToolNames = orchestration;
+            rootToolsByRun.set(spec.scopeId ?? "", configuredRootTools);
+          }
           const candidateRole = candidateRoleFromSpec(spec.role);
           const autoReport =
             spec.role === FEATURE_DISCOVERY_SYNTHESIS_ROLE &&
@@ -404,6 +415,9 @@ function harness(
     lifecycles,
     get rootToolNames() {
       return rootToolNames;
+    },
+    rootTool(runId: string, name: string) {
+      return rootToolsByRun.get(runId)?.find((tool) => tool.name === name);
     },
     submitUnauthorized(role: string, value: unknown) {
       assert.ok(discoverySubmitCallback);
@@ -562,7 +576,9 @@ function implementationSynthesisResult() {
     acceptedAugmentations: [],
     rejectedAugmentations: [],
     changedPaths: [],
-    checks: ["npm test passed in Minimal candidate workspace"],
+    checks: [
+      `npm test passed; WINNER_MARKER Minimal borrowed idea ${FINAL_SYNTHESIS_COMMIT}`,
+    ],
     assumptions: [],
     unresolvedIssues: [],
     finalCommit: FINAL_SYNTHESIS_COMMIT,
@@ -688,6 +704,7 @@ function synthesisReport(
     baseSha: "UNAVAILABLE",
     headSha: "UNAVAILABLE",
   },
+  findings: ReadonlyArray<Record<string, unknown>> = [],
 ) {
   if (reportType === "audit-synthesis-intermediate") {
     return JSON.stringify({
@@ -708,7 +725,7 @@ function synthesisReport(
     baseSha: gitIdentity.baseSha,
     headSha: gitIdentity.headSha,
     integratedRoles,
-    findings: [],
+    findings: findings.map(({ id: _id, ...finding }) => finding),
     closureResults: [],
     unresolvedConflicts: [],
     unprovenChecks: [],
@@ -727,9 +744,31 @@ function synthesisReport(
   });
 }
 
+function finalAuditFinding(id = "AUD-001") {
+  return {
+    id,
+    title: "Concrete final blocker",
+    scenario: "The affected path is exercised",
+    expected: "The required invariant holds",
+    actual: "The invariant is violated",
+    affectedPaths: ["extensions/pipelines/controller.ts"],
+    relationship: "introduced",
+    evidenceType: "static",
+    evidence: "The validated audit found a concrete reachable defect.",
+    impact: 3,
+    confidence: 99,
+    minimalNextAction: "Fix the defect and rerun its focused check.",
+    sourceRoles: [AUDIT_SEGMENT_LUNA_ROLES[0]],
+    scope: "initial",
+    scopeReference: "task",
+  };
+}
+
 async function finishEmbeddedAudit(
   run: ReturnType<typeof harness>,
   runId: string,
+  deliverFinalReport = true,
+  findings: ReadonlyArray<Record<string, unknown>> = [],
 ) {
   run.controller.setStage(runId, "final-audit");
   const agents = await run.controller.startFinalAudit(runId, {
@@ -743,9 +782,27 @@ async function finishEmbeddedAudit(
       (session) => session.spec.role === firstRole && session.spec.attempt > 1,
     ) ?? run.sessions.find((session) => session.spec.role === firstRole);
   assert.ok(first);
+  const firstReport = JSON.parse(reportForRole(firstRole)) as Record<
+    string,
+    unknown
+  >;
   first.emit({
     type: "settled",
-    outcome: { type: "completed", finalText: reportForRole(firstRole) },
+    outcome: {
+      type: "completed",
+      finalText: JSON.stringify({
+        ...firstReport,
+        findings: findings.map(
+          ({
+            id: _id,
+            sourceRoles: _roles,
+            scope: _scope,
+            scopeReference: _reference,
+            ...finding
+          }) => finding,
+        ),
+      }),
+    },
   });
   await settleInitialization();
   for (const role of AUDIT_SEGMENT_LUNA_ROLES.slice(1)) {
@@ -796,12 +853,28 @@ async function finishEmbeddedAudit(
               : headSha,
           headSha,
         },
+        findings,
       ),
     },
   });
   await settleInitialization();
   assert.equal(run.controller.get(runId)?.stage, "final-resolve");
   assert.equal(agents.length, 6);
+  if (deliverFinalReport) {
+    const waitTool = run.rootTool(runId, "pipeline_child_wait");
+    assert.ok(waitTool);
+    const synthesisNode = run.controller.agentView
+      .list()
+      .find((agent) => agent.role === "audit-synthesis");
+    assert.ok(synthesisNode);
+    await waitTool.execute(
+      "final-audit-wait",
+      { ids: [synthesisNode.id] },
+      undefined,
+      undefined,
+      {} as ExtensionContext,
+    );
+  }
 }
 
 async function advancePlanToComplete(
@@ -993,8 +1066,28 @@ test("feature discovery fan-in feeds three parallel Luna/xHIGH candidates with i
   );
   assert.ok(root);
   assert.doesNotMatch(root.sends[0] ?? "", /bbbbbbbb|"primaryCandidate"/);
-  assert.doesNotMatch(root.sends[0] ?? "", /Minimal candidate workspace/);
-  assert.match(root.sends[0] ?? "", /npm test passed in \[internal\]/);
+  assert.doesNotMatch(
+    root.sends[0] ?? "",
+    /WINNER_MARKER|dddddddd|npm test passed/,
+  );
+  assert.match(
+    root.sends[0] ?? "",
+    /reported 1 verification check\(s\).*text is withheld/,
+  );
+
+  for (const candidate of candidates) {
+    const node = run.controller.agentView
+      .list()
+      .find((item) => item.role === candidate.spec.role);
+    assert.ok(node);
+    const sendsBefore = candidate.sends.length;
+    const interruptsBefore = candidate.interrupted;
+    run.controller.agentView.requestSend(node.id, "restart frozen candidate");
+    run.controller.agentView.requestCancel(node.id);
+    await settleInitialization();
+    assert.equal(candidate.sends.length, sendsBefore);
+    assert.equal(candidate.interrupted, interruptsBefore);
+  }
 
   await run.controller.dispose();
 });
@@ -1038,7 +1131,10 @@ test("Best-of-3 provenance is retained internally but excluded from pre-final an
     finalTrack.prompts[0] ?? "",
     /WINNER_MARKER|"primaryCandidate"|bbbbbbbb|borrowed idea/,
   );
-  assert.match(finalTrack.prompts[0] ?? "", /npm test passed in \[internal\]/);
+  assert.match(
+    finalTrack.prompts[0] ?? "",
+    /reported 1 verification check\(s\).*text is withheld/,
+  );
   await run.controller.dispose();
 });
 
@@ -2177,6 +2273,37 @@ test("successful audit fan-in atomically enters audit-resolve", async () => {
   await run.controller.dispose();
 });
 
+test("child wait delivers the validated final audit report even when synthesis finalText is empty", async () => {
+  const run = harness();
+  const runId = run.controller.start(request());
+  await settleInitialization();
+  await finishEmbeddedAudit(run, runId, false);
+
+  const synthesizer = run.controller.agentView
+    .list()
+    .find((agent) => agent.role === "audit-synthesis");
+  assert.ok(synthesizer);
+  Reflect.set(synthesizer, "finalText", "");
+  const waitTool = run.rootTool(runId, "pipeline_child_wait");
+  assert.ok(waitTool);
+  const result = await waitTool.execute(
+    "final-audit-wait",
+    { ids: [synthesizer.id] },
+    undefined,
+    undefined,
+    {} as ExtensionContext,
+  );
+  const rendered = JSON.stringify(result);
+  assert.match(
+    rendered,
+    /VALIDATED_FINAL_AUDIT_REPORT_FOR_REQUIRED_RESOLUTION/,
+  );
+  assert.match(rendered, /audit-synthesis-final/);
+  assert.match(rendered, /resolve every concrete finding/i);
+  assert.match(rendered, /"finalAuditReportDelivered":true/);
+  await run.controller.dispose();
+});
+
 test("embedded roots cannot cancel a busy controller-owned audit synthesizer", async () => {
   const run = harness();
   const runId = run.controller.start(request());
@@ -2443,14 +2570,25 @@ test("feature completion appends committed and dirty Git facts without readiness
     () => run.controller.complete(runId, { ...facts, workingDir: "/other" }),
     /working_dir must be/,
   );
-  await finishEmbeddedAudit(run, runId);
+  await finishEmbeddedAudit(run, runId, true, [finalAuditFinding()]);
   fs.writeFileSync(path.join(workingDir, "feature.txt"), "committed\n");
   execFileSync("git", ["add", "feature.txt"], { cwd: workingDir });
   execFileSync("git", ["commit", "-qm", "feature implementation"], {
     cwd: workingDir,
   });
   fs.writeFileSync(path.join(workingDir, "feature.txt"), "dirty follow-up\n");
-  run.controller.complete(runId, facts);
+  assert.throws(
+    () => run.controller.complete(runId, facts),
+    /account for every delivered final-audit finding ID.*AUD-001/,
+  );
+  const resolvedFacts = {
+    ...facts,
+    reports: [
+      ...facts.reports,
+      "AUD-001 fixed by enforcing final report delivery; focused check passed",
+    ],
+  };
+  run.controller.complete(runId, resolvedFacts);
   await settleInitialization();
 
   assert.equal(run.handoffs.length, 1);
@@ -2478,7 +2616,10 @@ test("feature completion appends committed and dirty Git facts without readiness
         item.includes("+dirty follow-up"),
     ),
   );
-  assert.deepEqual({ ...completedFacts, git: facts.git }, facts);
+  assert.deepEqual(
+    { ...completedFacts, git: resolvedFacts.git },
+    resolvedFacts,
+  );
   assert.deepEqual(auditReport?.integratedRoles, AUDIT_SEGMENT_LUNA_ROLES);
   assert.equal(auditReport?.executedChecks[0]?.status, "passed");
   assert.equal(

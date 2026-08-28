@@ -135,6 +135,23 @@ test("strict handoff, selection, and synthesis contracts reject incomplete or un
       ),
     /strict bounded Best-of-3 contract/,
   );
+  assert.throws(
+    () =>
+      parseFeatureSelection(
+        JSON.stringify({
+          ...selection,
+          augmentationCandidates: [
+            {
+              sourceRole: "Minimal",
+              idea: "rewrite primary",
+              objectiveBenefit: "none",
+              evidence: "primary evidence",
+            },
+          ],
+        }),
+      ),
+    /losing candidates/,
+  );
 
   assert.equal(
     parseFeatureSynthesisProvenance(
