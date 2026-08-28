@@ -103,6 +103,11 @@ export function smallFeatureImplementerToolPolicy() {
   };
 }
 
+/** Feature candidates use this denylist plus a session-local scoped-tool allowlist. */
+export function featureIsolatedImplementerToolPolicy() {
+  return smallFeatureImplementerToolPolicy();
+}
+
 export function readOnlyPipelineRootToolPolicy() {
   return {
     excludeTools: [

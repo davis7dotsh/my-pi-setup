@@ -17,6 +17,7 @@ import {
   EXECUTOR_AUDIT_ROLE,
   FEATURE_PIPELINE_DISCOVERY_ROLES,
   FEATURE_PIPELINE_ID,
+  LUNA_MODEL,
   PIPELINE_STAGES,
   STATIC_LUNA_AUDIT_ROLES,
   PLAN_PIPELINE_AUDIT_ROLES,
@@ -60,6 +61,33 @@ import {
   buildPipelinePrompt,
   type FeatureDiscoveryReportContext,
 } from "./prompt.ts";
+import {
+  FEATURE_CANDIDATE_ROLES,
+  FEATURE_DISCOVERY_SYNTHESIS_ROLE,
+  FEATURE_IMPLEMENTATION_SYNTHESIS_ROLE,
+  assertBoundedSynthesisInput,
+  buildFeatureAugmentationPrompt,
+  buildFeatureCandidatePrompt,
+  buildFeatureDiscoverySynthesisPrompt,
+  buildFeatureSelectionPrompt,
+  parseFeatureCandidateHandoff,
+  parseFeatureDiscoverySynthesis,
+  parseFeatureSelection,
+  parseFeatureSynthesisProvenance,
+  preparedDiscoveryPackage,
+  type FeatureCandidateComparisonInput,
+  type FeatureCandidateHandoff,
+  type FeatureDiscoverySynthesis,
+  type FeatureSelection,
+  type FeatureSynthesisProvenance,
+} from "./feature-best-of-three.ts";
+import {
+  defaultFeatureGitOperations,
+  type FeatureCallerWorktree,
+  type FeatureGitOperations,
+  type FeatureWorktreeLifecycle,
+  type FrozenFeatureCandidate,
+} from "./feature-worktrees.ts";
 import {
   AuditSegment,
   buildAuditTrackPrompt,
@@ -110,6 +138,40 @@ function isFeatureDiscoveryRole(
   );
 }
 
+function isFeatureInternalImplementationRole(role: string) {
+  return (
+    role === FEATURE_DISCOVERY_SYNTHESIS_ROLE ||
+    role === FEATURE_IMPLEMENTATION_SYNTHESIS_ROLE ||
+    FEATURE_CANDIDATE_ROLES.some(
+      (candidateRole) => `candidate-${candidateRole.toLowerCase()}` === role,
+    )
+  );
+}
+
+function sanitizeFeatureAuditChecks(
+  checks: ReadonlyArray<string>,
+  lifecycle: FeatureWorktreeLifecycle,
+  candidates: ReadonlyArray<FrozenFeatureCandidate>,
+) {
+  const privateValues = [
+    lifecycle.temporaryRoot,
+    ...candidates.flatMap((candidate) => [
+      candidate.path,
+      candidate.branchRef,
+      candidate.headCommit,
+    ]),
+    ...FEATURE_CANDIDATE_ROLES,
+  ].filter(Boolean);
+  return checks.map((check) =>
+    privateValues
+      .reduce(
+        (value, privateValue) => value.split(privateValue).join("[internal]"),
+        check,
+      )
+      .slice(0, 8 * 1024),
+  );
+}
+
 interface MutableRun {
   id: string;
   definition: PipelineDefinitionId;
@@ -126,6 +188,16 @@ interface MutableRun {
     FeaturePipelineDiscoveryRole,
     FeatureDiscoveryReportContext
   >;
+  featureCaller?: FeatureCallerWorktree;
+  featureLifecycle?: FeatureWorktreeLifecycle;
+  featureDiscoverySynthesis?: FeatureDiscoverySynthesis;
+  featureCandidates?: ReadonlyArray<{
+    readonly candidate: FrozenFeatureCandidate;
+    readonly handoff: FeatureCandidateHandoff;
+  }>;
+  featureSelection?: FeatureSelection;
+  featureSynthesisProvenance?: FeatureSynthesisProvenance;
+  featureSynthesisChecks: ReadonlyArray<string>;
   auditSegment?: AuditSegment;
   auditSegmentStarting?: Promise<ReadonlyArray<AgentNodeSnapshot>>;
   completion?: PipelineCompletionFacts;
@@ -172,10 +244,12 @@ export interface PipelineControllerOptions {
       token: string,
     ) => void,
     discoveryToolAllowed?: (runId: string, role: string) => boolean,
+    featureCommit?: (runId: string, role: string, workingDir: string) => string,
   ) => AgentTreeSessionFactory;
   readonly onHandoff: (handoff: PipelineHandoff) => void | Promise<void>;
   readonly makeRunId?: () => string;
   readonly makeAgentId?: () => string;
+  readonly featureGit?: FeatureGitOperations;
 }
 
 function completionSchema() {
@@ -214,11 +288,13 @@ export class PipelineController {
   private readonly auditCorrections = new Map<string, number>();
   private readonly auditSessionTokens = new Map<string, string>();
   private readonly discoveryCorrections = new Map<string, number>();
+  private readonly featureSynthesisCorrections = new Map<string, number>();
   private readonly discoverySessionTokens = new Map<string, string>();
   private readonly discoverySubmissions = new Map<string, unknown>();
   private readonly tree: AgentTreeController;
   private readonly onHandoff: PipelineControllerOptions["onHandoff"];
   private readonly makeRunId: () => string;
+  private readonly featureGit: FeatureGitOperations;
   private runSequence = 0;
   private shuttingDown = false;
 
@@ -226,6 +302,7 @@ export class PipelineController {
     this.onHandoff = options.onHandoff;
     this.makeRunId =
       options.makeRunId ?? (() => `pipeline-${++this.runSequence}`);
+    this.featureGit = options.featureGit ?? defaultFeatureGitOperations;
     this.tree = new AgentTreeController({
       factory: options.createSessionFactory(
         (runId) => this.createRootTools(runId),
@@ -255,6 +332,8 @@ export class PipelineController {
             run.featureDiscoveryBootstrapped,
           );
         },
+        (runId, role, workingDir) =>
+          this.commitFeatureWorktree(runId, role, workingDir),
       ),
       // Pipeline graphs predeclare their model fan-out. Direct-subagent quotas
       // intentionally do not apply to pipeline roots or children.
@@ -410,6 +489,13 @@ export class PipelineController {
       throw new Error("Pipeline controller is shutting down.");
     const definition = request.pipeline ?? FEATURE_PIPELINE_ID;
     assertPipelineGitCommitSupported(definition, request.gitCommit === true);
+    const featureCaller =
+      definition === FEATURE_PIPELINE_ID
+        ? this.featureGit.preflight(request.workingDir)
+        : undefined;
+    const effectiveRequest = featureCaller
+      ? { ...request, workingDir: featureCaller.workingDir }
+      : request;
     if (request.audit && definition !== AUDIT_PIPELINE_ID) {
       throw new Error("Audit input is only valid for audit-pipeline.");
     }
@@ -429,8 +515,13 @@ export class PipelineController {
       );
     }
     const normalizedRequest =
-      definition === AUDIT_PIPELINE_ID ? { ...request, audit } : request;
+      definition === AUDIT_PIPELINE_ID
+        ? { ...effectiveRequest, audit }
+        : effectiveRequest;
     const id = this.makeRunId();
+    const featureLifecycle = featureCaller
+      ? this.featureGit.createLifecycle(featureCaller, id)
+      : undefined;
     const run: MutableRun = {
       id,
       definition,
@@ -438,12 +529,16 @@ export class PipelineController {
         ...normalizedRequest,
         gitCommit: normalizedRequest.gitCommit === true,
       },
-      baseSha: gitHead(request.workingDir),
+      baseSha:
+        featureCaller?.baseCommit ?? gitHead(effectiveRequest.workingDir),
       stage: initialStageForDefinition(definition),
       status: "starting",
       startedAt: Date.now(),
       featureDiscoveryBootstrapped: false,
       featureDiscoveryReports: new Map(),
+      ...(featureCaller ? { featureCaller } : {}),
+      ...(featureLifecycle ? { featureLifecycle } : {}),
+      featureSynthesisChecks: [],
       planArtifactsWritten: new Map(),
     };
     this.runs.set(id, run);
@@ -454,6 +549,10 @@ export class PipelineController {
 
   private async initialize(run: MutableRun) {
     try {
+      if (run.definition === FEATURE_PIPELINE_ID) {
+        await this.initializeFeaturePipeline(run);
+        return;
+      }
       const root = await this.tree.spawn({
         scopeId: run.id,
         role:
@@ -466,9 +565,7 @@ export class PipelineController {
         cwd: run.request.workingDir,
         prompt: buildPipelinePrompt(run.definition, run.request),
         persistent: true,
-        deferPrompt:
-          run.definition === FEATURE_PIPELINE_ID ||
-          run.definition === AUDIT_PIPELINE_ID,
+        deferPrompt: run.definition === AUDIT_PIPELINE_ID,
         shouldStart: () => run.status === "starting",
       });
       run.rootId = root.id;
@@ -487,14 +584,7 @@ export class PipelineController {
       } else {
         run.status = "running";
         this.notify();
-        if (run.definition === FEATURE_PIPELINE_ID) {
-          const discoveryReports = await this.bootstrapFeatureDiscovery(run);
-          if (run.status !== "running") return;
-          await this.tree.startDeferred(
-            root.id,
-            buildPipelinePrompt(run.definition, run.request, discoveryReports),
-          );
-        } else if (run.definition === AUDIT_PIPELINE_ID) {
+        if (run.definition === AUDIT_PIPELINE_ID) {
           run.auditSegmentStarting = this.startAuditSegment(run, {
             acceptanceContract:
               run.request.audit?.acceptanceCriteria.join("\n") ||
@@ -513,6 +603,257 @@ export class PipelineController {
         Boolean(run.rootId),
       );
     }
+  }
+
+  private async initializeFeaturePipeline(run: MutableRun) {
+    const lifecycle = run.featureLifecycle;
+    if (!lifecycle || !run.featureCaller) {
+      throw new Error("feature-pipeline Git lifecycle was not initialized.");
+    }
+    const discoverySynthesisAgent = await this.tree.spawn({
+      scopeId: run.id,
+      role: FEATURE_DISCOVERY_SYNTHESIS_ROLE,
+      attempt: 1,
+      title: "Feature discovery synthesis",
+      model: LUNA_MODEL,
+      thinkingLevel: "medium",
+      cwd: run.request.workingDir,
+      prompt: "Controller-deferred feature discovery synthesis.",
+      persistent: true,
+      deferPrompt: true,
+      shouldStart: () => run.status === "starting",
+    });
+    run.rootId = discoverySynthesisAgent.id;
+    if (run.status !== "starting") return;
+    run.status = "running";
+    this.notify();
+
+    const discoveryReports = await this.bootstrapFeatureDiscovery(run);
+    if (run.status !== "running") return;
+    await this.tree.startDeferred(
+      discoverySynthesisAgent.id,
+      buildFeatureDiscoverySynthesisPrompt(
+        run.request.task,
+        run.request.workingDir,
+        discoveryReports,
+      ),
+    );
+    const discoverySynthesis = await this.settleFeatureSession(
+      run,
+      discoverySynthesisAgent.id,
+      "Feature discovery synthesis",
+      (text) => parseFeatureDiscoverySynthesis(text, discoveryReports),
+      "Return one complete strict feature-discovery-synthesis-v1 JSON object. Do not repeat discovery or choose an implementation model/candidate.",
+    );
+    run.featureDiscoverySynthesis = discoverySynthesis;
+    if (run.status !== "running") return;
+
+    const prepared = preparedDiscoveryPackage(
+      run.request.task,
+      discoveryReports,
+      discoverySynthesis,
+    );
+    const preparedPackageJson = JSON.stringify(prepared);
+    assertBoundedSynthesisInput(prepared);
+    const candidateWorktrees = lifecycle.createCandidateWorktrees();
+    const candidateAgents = await Promise.all(
+      candidateWorktrees.map((worktree) =>
+        this.tree.spawn({
+          scopeId: run.id,
+          parentId: discoverySynthesisAgent.id,
+          role: `candidate-${worktree.role.toLowerCase()}`,
+          attempt: 1,
+          title: `${worktree.role} implementation candidate`,
+          model: LUNA_MODEL,
+          thinkingLevel: "xhigh",
+          cwd: worktree.path,
+          prompt: buildFeatureCandidatePrompt(
+            worktree.role,
+            worktree.path,
+            worktree.branchRef,
+            worktree.baseCommit,
+            preparedPackageJson,
+          ),
+          shouldStart: () => run.status === "running",
+        }),
+      ),
+    );
+    const frozenCandidates = await Promise.all(
+      candidateAgents.map(async (agent, index) => {
+        const worktree = candidateWorktrees[index];
+        if (!worktree)
+          throw new Error("Candidate worktree mapping disappeared.");
+        return this.settleFeatureSession(
+          run,
+          agent.id,
+          `${worktree.role} implementation candidate`,
+          (text) => {
+            const handoff = parseFeatureCandidateHandoff(text);
+            return {
+              candidate: lifecycle.freezeCandidate(worktree, handoff),
+              handoff,
+            };
+          },
+          `Return one complete strict ${worktree.role} candidate handoff after committing and verifying the complete implementation in your assigned worktree.`,
+        );
+      }),
+    );
+    run.featureCandidates = frozenCandidates;
+    if (run.status !== "running") return;
+
+    const comparisonInput: ReadonlyArray<FeatureCandidateComparisonInput> =
+      frozenCandidates.map(({ candidate, handoff }) => ({
+        role: candidate.role,
+        handoff,
+        changedPaths: candidate.changedPaths,
+        boundedDiff: candidate.boundedDiff,
+        immutableCommit: candidate.headCommit,
+        worktreeReference: candidate.path,
+      }));
+    const selectionDirectory = lifecycle.prepareSelectionDirectory();
+    const synthesisAgent = await this.tree.spawn({
+      scopeId: run.id,
+      parentId: discoverySynthesisAgent.id,
+      role: FEATURE_IMPLEMENTATION_SYNTHESIS_ROLE,
+      attempt: 1,
+      title: "Best-of-3 selection and bounded synthesis",
+      model: LUNA_MODEL,
+      thinkingLevel: "xhigh",
+      cwd: selectionDirectory,
+      prompt: buildFeatureSelectionPrompt(
+        prepared,
+        comparisonInput,
+        selectionDirectory,
+      ),
+      persistent: true,
+      shouldStart: () => run.status === "running",
+    });
+    const selection = await this.settleFeatureSession(
+      run,
+      synthesisAgent.id,
+      "Best-of-3 primary selection",
+      (text) => {
+        lifecycle.assertSelectionReadOnly(
+          frozenCandidates.map(({ candidate }) => candidate),
+        );
+        return parseFeatureSelection(text);
+      },
+      "Return one strict selection-only JSON object. Do not write code, mutate candidates, or invent a fourth implementation.",
+    );
+    run.featureSelection = selection;
+    const primary = frozenCandidates.find(
+      ({ candidate }) => candidate.role === selection.primaryCandidate,
+    );
+    const primaryInput = comparisonInput.find(
+      ({ role }) => role === selection.primaryCandidate,
+    );
+    if (!primary || !primaryInput) {
+      throw new Error("Validated primary candidate is unavailable.");
+    }
+    const synthesisWorktree = lifecycle.createSynthesisWorktree(
+      primary.candidate,
+    );
+    this.tree.enableMutation(synthesisAgent.id);
+    await this.tree.send(
+      synthesisAgent.id,
+      buildFeatureAugmentationPrompt({
+        selection,
+        primary: primaryInput,
+        synthesisWorktree: synthesisWorktree.path,
+        synthesisBranchRef: synthesisWorktree.branchRef,
+      }),
+    );
+    const synthesized = await this.settleFeatureSession(
+      run,
+      synthesisAgent.id,
+      "Primary-based bounded synthesis",
+      (text) => {
+        const provenance = parseFeatureSynthesisProvenance(text);
+        return {
+          provenance,
+          validated: lifecycle.validateSynthesis(synthesisWorktree, provenance),
+        };
+      },
+      "Return one strict synthesis provenance JSON object after bounded primary-based augmentation, repository verification, a clean worktree, and a distinct final commit. Do not rewrite from scratch.",
+    );
+    run.featureSynthesisProvenance = synthesized.provenance;
+    run.featureSynthesisChecks = sanitizeFeatureAuditChecks(
+      synthesized.provenance.checks,
+      lifecycle,
+      frozenCandidates.map(({ candidate }) => candidate),
+    );
+    lifecycle.promote(synthesized.validated);
+    const cleanupFailures = lifecycle.cleanup();
+    if (cleanupFailures.length > 0) {
+      throw new Error(cleanupFailures.join(" "));
+    }
+
+    const postPromotionRoot = await this.tree.spawn({
+      scopeId: run.id,
+      role: "pipeline-root",
+      attempt: 1,
+      title: definitionFor(run.definition).rootTitle,
+      model: LUNA_MODEL,
+      thinkingLevel: "xhigh",
+      cwd: run.request.workingDir,
+      prompt: "Controller-deferred post-promotion audit and remediation root.",
+      persistent: true,
+      deferPrompt: true,
+      shouldStart: () => run.status === "running",
+    });
+    if (postPromotionRoot.status === "error") {
+      throw new Error(
+        postPromotionRoot.error ?? "Post-promotion pipeline root failed.",
+      );
+    }
+    this.tree.reparent(discoverySynthesisAgent.id, postPromotionRoot.id);
+    run.rootId = postPromotionRoot.id;
+    run.stage = "build";
+    this.notify();
+    await this.tree.startDeferred(
+      postPromotionRoot.id,
+      buildPipelinePrompt(
+        run.definition,
+        run.request,
+        discoverySynthesis,
+        run.featureSynthesisChecks,
+      ),
+    );
+  }
+
+  private async settleFeatureSession<T>(
+    run: MutableRun,
+    sessionId: string,
+    label: string,
+    parse: (text: string) => T,
+    correctionInstruction: string,
+  ) {
+    while (run.status === "running") {
+      const [settled] = await this.tree.wait([sessionId]);
+      if (!settled)
+        throw new Error(`${label} session ${sessionId} disappeared.`);
+      if (settled.status === "error" || settled.status === "cancelled") {
+        throw new Error(
+          `${label} session ${settled.status}: ${settled.error ?? "provider failure or cancellation"}.`,
+        );
+      }
+      try {
+        return parse(settled.finalText);
+      } catch (error) {
+        const count =
+          (this.featureSynthesisCorrections.get(sessionId) ?? 0) + 1;
+        this.featureSynthesisCorrections.set(sessionId, count);
+        const detail = error instanceof Error ? error.message : String(error);
+        if (count >= 4) {
+          throw new Error(`${label} rejected settled turn ${count}: ${detail}`);
+        }
+        await this.tree.send(
+          sessionId,
+          `${label} was rejected (correction ${count}/3): ${detail} ${correctionInstruction}`,
+        );
+      }
+    }
+    throw new Error(`${label} ended because the run stopped.`);
   }
 
   private async spawnFeatureDiscoveryAttempt(
@@ -625,7 +966,6 @@ export class PipelineController {
     const reports = this.featureDiscoveryReports(run);
     const fanInIssues = validateFeatureDiscoveryFanIn(reports);
     if (fanInIssues.length > 0) throw new Error(fanInIssues.join(" "));
-    run.stage = "build";
     run.featureDiscoveryBootstrapped = true;
     this.notify();
     return reports;
@@ -802,11 +1142,31 @@ export class PipelineController {
       mode: "initial" as const,
       acceptanceCriteria: [],
     };
+    const featureSynthesis = run.featureDiscoverySynthesis;
+    const acceptanceContract =
+      run.definition === FEATURE_PIPELINE_ID && featureSynthesis
+        ? JSON.stringify({
+            featureContract: featureSynthesis.featureContract,
+            acceptanceCriteria: featureSynthesis.acceptanceCriteria,
+            constraints: featureSynthesis.constraints,
+            nonGoals: featureSynthesis.nonGoals,
+            contractsInvariants: featureSynthesis.contractsInvariants,
+            verificationExpectations: featureSynthesis.verificationExpectations,
+          })
+        : options.acceptanceContract;
+    const assumptions =
+      run.definition === FEATURE_PIPELINE_ID && featureSynthesis
+        ? featureSynthesis.assumptions
+        : options.assumptions;
+    const checks =
+      run.definition === FEATURE_PIPELINE_ID
+        ? run.featureSynthesisChecks
+        : options.checks;
     const context: AuditSegmentContext = {
       task: run.request.task,
-      acceptanceContract: options.acceptanceContract.slice(0, 64 * 1024),
-      assumptions: options.assumptions.slice(0, 128),
-      checks: options.checks.slice(0, 128),
+      acceptanceContract: acceptanceContract.slice(0, 64 * 1024),
+      assumptions: assumptions.slice(0, 128),
+      checks: checks.slice(0, 128),
       input,
       git: this.auditGitIdentity(run),
       purpose:
@@ -1078,6 +1438,16 @@ export class PipelineController {
     this.deliver(run);
   }
 
+  private cleanupFeatureLifecycle(run: MutableRun) {
+    const failures = run.featureLifecycle?.cleanup() ?? [];
+    if (failures.length === 0) return;
+    run.error = [run.error, ...failures]
+      .filter(Boolean)
+      .join(" ")
+      .slice(0, 16 * 1024);
+    this.notify();
+  }
+
   private onTreeChange() {
     if (this.shuttingDown) return;
     for (const run of this.runs.values()) {
@@ -1088,8 +1458,10 @@ export class PipelineController {
         run.status = "cancelled";
         run.finishedAt = Date.now();
         run.error = root.error;
-        void this.cancelActiveChildren(run);
-        this.deliver(run);
+        void this.cancelActiveChildren(run).finally(() => {
+          this.cleanupFeatureLifecycle(run);
+          this.deliver(run);
+        });
       } else if (root.status === "error") {
         this.failRun(run, root.error ?? "Pipeline root failed.");
       }
@@ -1105,12 +1477,15 @@ export class PipelineController {
     run.status = "failed";
     run.finishedAt = Date.now();
     run.error = error.slice(0, 16 * 1024);
-    void this.cancelActiveChildren(run);
+    const cleanup = this.cancelActiveChildren(run).finally(() =>
+      this.cleanupFeatureLifecycle(run),
+    );
     if (cancelRoot && run.rootId) {
       void this.tree.cancel(run.rootId).catch(() => {});
     }
     this.notify();
-    this.deliver(run);
+    if (run.featureLifecycle) void cleanup.finally(() => this.deliver(run));
+    else this.deliver(run);
   }
 
   private factsForFailure(run: MutableRun): PipelineCompletionFacts {
@@ -1330,6 +1705,20 @@ export class PipelineController {
     return this.snapshot(run);
   }
 
+  private featureAuditAdditionalContext(run: MutableRun) {
+    const synthesis = run.featureDiscoverySynthesis;
+    if (!synthesis) {
+      throw new Error("Feature audit context is unavailable before promotion.");
+    }
+    return JSON.stringify({
+      discoveryReports: this.featureDiscoveryReports(run),
+      discoverySynthesis: synthesis,
+      verificationChecks: run.featureSynthesisChecks,
+      reviewedWorkspace: run.request.workingDir,
+      reviewedState: "promoted final implementation plus any audit remediation",
+    });
+  }
+
   async spawnChild(
     runId: string,
     role: PipelineChildRole,
@@ -1374,7 +1763,7 @@ export class PipelineController {
     ) {
       if (!controllerOwnedDiscovery) {
         throw new Error(
-          `${role} is controller-owned and unavailable to feature-pipeline Sol.`,
+          `${role} is controller-owned and unavailable to the selected feature-pipeline implementation root.`,
         );
       }
       if (run.stage !== "discover" || run.featureDiscoveryBootstrapped) {
@@ -1434,12 +1823,17 @@ export class PipelineController {
     const priorReport = priorReportRole
       ? this.agentsFor(runId).find((agent) => agent.role === priorReportRole)
       : undefined;
+    const hostContext =
+      run.definition === FEATURE_PIPELINE_ID &&
+      STATIC_LUNA_AUDIT_ROLES.some((auditRole) => auditRole === role)
+        ? this.featureAuditAdditionalContext(run)
+        : additionalContext;
     const promptContext = [
       ...(priorReport && priorReportRole
         ? [`${titleForRole(priorReportRole)} report:`, priorReport.finalText]
         : []),
       ...(contextPolicy.gitEvidence ? [this.gitEvidence(runId)] : []),
-      additionalContext,
+      hostContext,
     ]
       .filter((item) => item.trim())
       .join("\n");
@@ -1525,10 +1919,11 @@ export class PipelineController {
     if (!agent.parentId) throw new Error(`Agent "${id}" is the pipeline root.`);
     if (
       agent.role === AUDIT_SYNTHESIS_ROLE ||
+      isFeatureInternalImplementationRole(agent.role) ||
       [...(run.auditSegment?.tracks.values() ?? [])].includes(id)
     ) {
       throw new Error(
-        "Controller-owned audit segment sessions cannot be retried or continued.",
+        "Controller-owned synthesis and candidate sessions cannot be retried or continued.",
       );
     }
     if (
@@ -1536,7 +1931,7 @@ export class PipelineController {
       isFeatureDiscoveryRole(agent.role)
     ) {
       throw new Error(
-        "feature-pipeline discovery retries are controller-owned and unavailable to Sol.",
+        "feature-pipeline discovery retries are controller-owned and unavailable to the selected implementation root.",
       );
     }
     if (run.definition === SMALL_FEATURE_PIPELINE_ID) {
@@ -1615,10 +2010,11 @@ export class PipelineController {
     if (!agent.parentId) throw new Error(`Agent "${id}" is the pipeline root.`);
     if (
       agent.role === AUDIT_SYNTHESIS_ROLE ||
+      isFeatureInternalImplementationRole(agent.role) ||
       [...(run.auditSegment?.tracks.values() ?? [])].includes(id)
     ) {
       throw new Error(
-        "Controller-owned audit segment sessions can only be cancelled with the whole pipeline run.",
+        "Controller-owned synthesis and candidate sessions can only be cancelled with the whole pipeline run.",
       );
     }
     return this.tree.cancel(id);
@@ -1648,6 +2044,23 @@ export class PipelineController {
       throw new Error("Plan artifacts can only be validated by plan-pipeline.");
     }
     return resolvePlanArtifact(run.request.workingDir, planPath);
+  }
+
+  private commitFeatureWorktree(
+    runId: string,
+    role: string,
+    workingDir: string,
+  ) {
+    const run = this.requireActiveRun(runId);
+    if (run.definition !== FEATURE_PIPELINE_ID || !run.featureLifecycle) {
+      throw new Error("Feature commit authority is unavailable for this run.");
+    }
+    if (!isFeatureInternalImplementationRole(role)) {
+      throw new Error(
+        "Only controller-owned feature candidates/synthesis may commit here.",
+      );
+    }
+    return run.featureLifecycle.commitAssignedWorktree(role, workingDir);
   }
 
   gitStatus(runId: string) {
@@ -1805,6 +2218,7 @@ export class PipelineController {
     this.notify();
     await this.cancelActiveChildren(run);
     if (run.rootId) await this.tree.cancel(run.rootId);
+    this.cleanupFeatureLifecycle(run);
     this.deliver(run);
     return this.snapshot(run);
   }
@@ -1918,7 +2332,8 @@ export class PipelineController {
           if (!child.parentId)
             throw new Error(`Agent "${params.id}" is the pipeline root.`);
           const issues =
-            child.role === AUDIT_SYNTHESIS_ROLE
+            child.role === AUDIT_SYNTHESIS_ROLE ||
+            isFeatureInternalImplementationRole(child.role)
               ? []
               : validatePipelineReport(
                   run.definition,
@@ -1969,7 +2384,8 @@ export class PipelineController {
                 text: children
                   .map((child) => {
                     const issues =
-                      child.role === AUDIT_SYNTHESIS_ROLE
+                      child.role === AUDIT_SYNTHESIS_ROLE ||
+                      isFeatureInternalImplementationRole(child.role)
                         ? []
                         : validatePipelineReport(
                             run.definition,
@@ -2199,6 +2615,7 @@ export class PipelineController {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
     await this.tree.dispose();
+    for (const run of this.runs.values()) this.cleanupFeatureLifecycle(run);
     this.listeners.clear();
   }
 }

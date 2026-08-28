@@ -37,6 +37,23 @@ import {
   type PipelineHandoff,
 } from "./domain.ts";
 import { FEATURE_DISCOVERY_COVERAGE } from "./discovery-report.ts";
+import {
+  FEATURE_CANDIDATE_ROLES,
+  FEATURE_DISCOVERY_SYNTHESIS_ROLE,
+  FEATURE_IMPLEMENTATION_SYNTHESIS_ROLE,
+  type FeatureCandidateHandoff,
+  type FeatureCandidateRole,
+  type FeatureSynthesisProvenance,
+} from "./feature-best-of-three.ts";
+import type {
+  FeatureCallerWorktree,
+  FeatureGitOperations,
+  FeatureTemporaryWorktree,
+  FeatureWorktreeLifecycle,
+  FrozenFeatureCandidate,
+  FeatureSynthesisWorktree,
+  ValidatedFeatureSynthesis,
+} from "./feature-worktrees.ts";
 
 class FakePipelineSession implements AgentTreeSession {
   readonly listeners = new Set<(event: AgentTreeSessionEvent) => void>();
@@ -46,16 +63,18 @@ class FakePipelineSession implements AgentTreeSession {
   isStreaming = false;
   interrupted = 0;
   disposed = 0;
+  mutationEnabled = 0;
 
   readonly activeTools: ReadonlyArray<string>;
   readonly spec: AgentNodeSpec;
-  readonly autoReport?: string;
+  readonly autoReport?: string | ((turn: number) => string);
   readonly discoverySubmit?: (value: unknown) => void;
+  private turn = 0;
 
   constructor(
     activeTools: ReadonlyArray<string>,
     spec: AgentNodeSpec,
-    autoReport?: string,
+    autoReport?: string | ((turn: number) => string),
     discoverySubmit?: (value: unknown) => void,
   ) {
     this.activeTools = activeTools;
@@ -76,23 +95,35 @@ class FakePipelineSession implements AgentTreeSession {
     for (const listener of this.listeners) listener(event);
   }
 
+  private autoComplete() {
+    if (!this.autoReport) return;
+    const report =
+      typeof this.autoReport === "function"
+        ? this.autoReport(this.turn++)
+        : this.autoReport;
+    queueMicrotask(() =>
+      this.emit({
+        type: "settled",
+        outcome: { type: "completed", finalText: report },
+      }),
+    );
+  }
+
   async prompt(text: string) {
     this.prompts.push(text);
     this.isStreaming = true;
-    if (this.autoReport) {
-      queueMicrotask(() =>
-        this.emit({
-          type: "settled",
-          outcome: { type: "completed", finalText: this.autoReport! },
-        }),
-      );
-    }
+    this.autoComplete();
   }
 
   async send(text: string) {
     this.sends.push(text);
     this.emit({ type: "run_started" });
     this.emit({ type: "user", text });
+    this.autoComplete();
+  }
+
+  enableMutation() {
+    this.mutationEnabled++;
   }
 
   async interrupt() {
@@ -105,14 +136,156 @@ class FakePipelineSession implements AgentTreeSession {
   }
 }
 
+const BASE_COMMIT = "a".repeat(40);
+const CANDIDATE_COMMITS: Readonly<Record<FeatureCandidateRole, string>> = {
+  Minimal: "b".repeat(40),
+  Robust: "c".repeat(40),
+  Architectural: "d".repeat(40),
+};
+const FINAL_SYNTHESIS_COMMIT = "e".repeat(40);
+
+class FakeFeatureLifecycle implements FeatureWorktreeLifecycle {
+  readonly temporaryRoot: string;
+  readonly caller: FeatureCallerWorktree;
+  cleaned = 0;
+  promoted = 0;
+  selectionReadOnlyChecks = 0;
+
+  constructor(runId: string, caller: FeatureCallerWorktree) {
+    this.temporaryRoot = `/tmp/${runId}-best-of-three`;
+    this.caller = caller;
+  }
+
+  createCandidateWorktrees() {
+    return FEATURE_CANDIDATE_ROLES.map((role) => ({
+      role,
+      path: `${this.temporaryRoot}/candidate-${role.toLowerCase()}`,
+      branchRef: `pipi-feature/test/candidate-${role.toLowerCase()}`,
+      baseCommit: this.caller.baseCommit,
+    }));
+  }
+
+  freezeCandidate(
+    worktree: FeatureTemporaryWorktree,
+    handoff: FeatureCandidateHandoff,
+  ): FrozenFeatureCandidate {
+    assert.equal(handoff.role, worktree.role);
+    assert.equal(handoff.worktreePath, worktree.path);
+    assert.equal(handoff.branchRef, worktree.branchRef);
+    assert.equal(handoff.baseCommit, worktree.baseCommit);
+    assert.equal(handoff.candidateHeadCommit, CANDIDATE_COMMITS[worktree.role]);
+    return {
+      ...worktree,
+      headCommit: handoff.candidateHeadCommit,
+      changedPaths: handoff.changedPaths,
+      boundedDiff: {
+        text: `diff --git a/${handoff.changedPaths[0]} b/${handoff.changedPaths[0]}`,
+        truncated: false,
+        bytes: 64,
+      },
+      frozen: true,
+    };
+  }
+
+  prepareSelectionDirectory() {
+    return `${this.temporaryRoot}/synthesis`;
+  }
+
+  assertSelectionReadOnly(_candidates: ReadonlyArray<FrozenFeatureCandidate>) {
+    this.selectionReadOnlyChecks++;
+  }
+
+  createSynthesisWorktree(
+    primary: FrozenFeatureCandidate,
+  ): FeatureSynthesisWorktree {
+    return {
+      path: `${this.temporaryRoot}/synthesis`,
+      branchRef: "pipi-feature/test/synthesis",
+      primaryRole: primary.role,
+      primaryCommit: primary.headCommit,
+    };
+  }
+
+  commitAssignedWorktree(role: string, _workingDir: string) {
+    const candidate = candidateRoleFromSpec(role);
+    return candidate ? CANDIDATE_COMMITS[candidate] : FINAL_SYNTHESIS_COMMIT;
+  }
+
+  validateSynthesis(
+    worktree: FeatureSynthesisWorktree,
+    provenance: FeatureSynthesisProvenance,
+  ): ValidatedFeatureSynthesis {
+    assert.equal(provenance.primaryCandidate, worktree.primaryRole);
+    assert.equal(provenance.primaryCommit, worktree.primaryCommit);
+    assert.equal(provenance.finalCommit, FINAL_SYNTHESIS_COMMIT);
+    return {
+      ...worktree,
+      finalCommit: FINAL_SYNTHESIS_COMMIT,
+      changedPaths: provenance.changedPaths,
+    };
+  }
+
+  promote(synthesis: ValidatedFeatureSynthesis) {
+    assert.equal(synthesis.finalCommit, FINAL_SYNTHESIS_COMMIT);
+    this.promoted++;
+  }
+
+  cleanup() {
+    this.cleaned++;
+    return [];
+  }
+}
+
+function candidateRoleFromSpec(role: string) {
+  return FEATURE_CANDIDATE_ROLES.find(
+    (candidate) => `candidate-${candidate.toLowerCase()}` === role,
+  );
+}
+
+function featureGitHarness(
+  lifecycles: FakeFeatureLifecycle[],
+): FeatureGitOperations {
+  return {
+    preflight(workingDir) {
+      let baseCommit = BASE_COMMIT;
+      try {
+        baseCommit = execFileSync("git", ["rev-parse", "HEAD"], {
+          cwd: workingDir,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"],
+        }).trim();
+      } catch {
+        // Most controller fixtures intentionally use a synthetic workspace.
+      }
+      return {
+        workingDir,
+        repositoryRoot: workingDir,
+        commonGitDir: "/tmp/repo/.git",
+        branch: "feat/test",
+        branchRef: "refs/heads/feat/test",
+        baseCommit,
+      };
+    },
+    createLifecycle(caller, runId) {
+      const lifecycle = new FakeFeatureLifecycle(runId, caller);
+      lifecycles.push(lifecycle);
+      return lifecycle;
+    },
+  };
+}
+
 function harness(
   options: {
     rootGate?: Promise<void>;
     autoCompleteFeatureDiscovery?: boolean;
+    autoCompleteDiscoverySynthesis?: boolean;
+    autoCompleteCandidates?: boolean;
+    autoCompleteSelectionAndSynthesis?: boolean;
   } = {},
 ) {
   const sessions: FakePipelineSession[] = [];
   const handoffs: PipelineHandoff[] = [];
+  const lifecycles: FakeFeatureLifecycle[] = [];
   let agentSequence = 0;
   let runSequence = 0;
   let rootToolNames: string[] = [];
@@ -141,17 +314,42 @@ function harness(
       return {
         async create(spec) {
           if (!spec.parentId && options.rootGate) await options.rootGate;
-          const orchestration = !spec.parentId
+          const isImplementationRoot =
+            !spec.parentId && spec.role === "pipeline-root";
+          const orchestration = isImplementationRoot
             ? rootTools(spec.scopeId ?? "").map((tool) => tool.name)
             : [];
-          if (!spec.parentId) rootToolNames = orchestration;
+          if (isImplementationRoot) rootToolNames = orchestration;
+          const candidateRole = candidateRoleFromSpec(spec.role);
           const autoReport =
-            options.autoCompleteFeatureDiscovery !== false &&
-            spec.parentId &&
-            definitionForRun(spec.scopeId ?? "") === "feature-pipeline" &&
-            spec.role.startsWith("discover-")
-              ? reportForRole(spec.role)
-              : undefined;
+            spec.role === FEATURE_DISCOVERY_SYNTHESIS_ROLE &&
+            options.autoCompleteDiscoverySynthesis !== false
+              ? JSON.stringify(discoverySynthesisResult())
+              : candidateRole && options.autoCompleteCandidates !== false
+                ? JSON.stringify(
+                    candidateHandoff(
+                      candidateRole,
+                      spec,
+                      lifecycles.find((lifecycle) =>
+                        spec.cwd.startsWith(lifecycle.temporaryRoot),
+                      )?.caller.baseCommit ?? BASE_COMMIT,
+                    ),
+                  )
+                : spec.role === FEATURE_IMPLEMENTATION_SYNTHESIS_ROLE &&
+                    options.autoCompleteSelectionAndSynthesis !== false
+                  ? (turn: number) =>
+                      JSON.stringify(
+                        turn === 0
+                          ? selectionResult()
+                          : implementationSynthesisResult(),
+                      )
+                  : options.autoCompleteFeatureDiscovery !== false &&
+                      spec.parentId &&
+                      definitionForRun(spec.scopeId ?? "") ===
+                        "feature-pipeline" &&
+                      spec.role.startsWith("discover-")
+                    ? reportForRole(spec.role)
+                    : undefined;
           const discoveryAllowed =
             Boolean(spec.parentId) &&
             Boolean(discoverySubmit) &&
@@ -167,7 +365,7 @@ function harness(
             );
           }
           const session = new FakePipelineSession(
-            spec.parentId
+            !isImplementationRoot
               ? [
                   "read",
                   "fd",
@@ -197,11 +395,13 @@ function harness(
     onHandoff: (handoff) => {
       handoffs.push(handoff);
     },
+    featureGit: featureGitHarness(lifecycles),
   });
   return {
     controller,
     sessions,
     handoffs,
+    lifecycles,
     get rootToolNames() {
       return rootToolNames;
     },
@@ -215,41 +415,33 @@ function harness(
 const request = (workingDir = "/tmp/work") => ({
   task: "Implement the approved feature",
   workingDir,
+  gitCommit: true,
 });
 
-test("git_commit accepts feature true and false without workspace gates", async () => {
-  const workingDir = fs.mkdtempSync(path.join(os.tmpdir(), "feature-commit-"));
-  fs.writeFileSync(path.join(workingDir, "preexisting.txt"), "dirty\n");
+test("feature invocation rejects git_commit false or omission before Git lifecycle or sessions", async () => {
   const run = harness();
-  const enabledId = run.controller.start({
-    ...request(workingDir),
-    pipeline: "feature-pipeline",
-    gitCommit: true,
-  });
-  const disabledId = run.controller.start({
-    ...request(workingDir),
-    pipeline: "feature-pipeline",
-    gitCommit: false,
-  });
-  const omittedId = run.controller.start({
-    ...request(workingDir),
-    pipeline: "feature-pipeline",
-  });
-  await settleInitialization();
-
-  assert.equal(run.controller.get(enabledId)?.status, "running");
-  assert.equal(run.controller.get(disabledId)?.status, "running");
-  assert.equal(run.controller.get(omittedId)?.status, "running");
-  const rootPrompt = (id: string) =>
-    run.sessions.find(
-      (session) => session.spec.scopeId === id && !session.spec.parentId,
-    )?.sends[0] ?? "";
-  assert.match(rootPrompt(enabledId), /Commit permission: ENABLED/);
-  assert.match(rootPrompt(disabledId), /Commit permission: DISABLED/);
-  assert.match(rootPrompt(omittedId), /Commit permission: DISABLED/);
-
+  assert.throws(
+    () =>
+      run.controller.start({
+        task: "Implement the approved feature",
+        workingDir: "/tmp/work",
+        pipeline: "feature-pipeline",
+        gitCommit: false,
+      }),
+    /requires explicit git_commit: true/,
+  );
+  assert.throws(
+    () =>
+      run.controller.start({
+        task: "Implement the approved feature",
+        workingDir: "/tmp/work",
+        pipeline: "feature-pipeline",
+      }),
+    /requires explicit git_commit: true/,
+  );
+  assert.equal(run.sessions.length, 0);
+  assert.equal(run.lifecycles.length, 0);
   await run.controller.dispose();
-  fs.rmSync(workingDir, { recursive: true, force: true });
 });
 
 test("git_commit keeps plan/audit rejection and small-feature acceptance", async () => {
@@ -273,8 +465,108 @@ test("git_commit keeps plan/audit rejection and small-feature acceptance", async
 });
 
 async function settleInitialization() {
-  await new Promise((resolve) => setImmediate(resolve));
-  await new Promise((resolve) => setImmediate(resolve));
+  for (let turn = 0; turn < 5; turn++) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
+function discoverySynthesisResult() {
+  return {
+    reportType: "feature-discovery-synthesis-v1" as const,
+    summary: "Synthesized all validated discovery tracks",
+    featureContract:
+      "Implement the approved feature without changing neighboring pipelines.",
+    acceptanceCriteria: [
+      {
+        scenario: "Best-of-3 implementation completes",
+        expected: "The exact verified synthesized state is promoted",
+        verification: "Inspect controller lifecycle evidence",
+      },
+    ],
+    constraints: ["Preserve the hardcoded feature-pipeline graph"],
+    nonGoals: ["Do not repeat discovery"],
+    precedents: [
+      {
+        reference: "extensions/pipelines/controller.ts",
+        discoveryDetail:
+          "Controller behavior provides direct repository evidence",
+        finding: "Controller-owned fan-in is the established precedent",
+      },
+    ],
+    relevantPaths: ["extensions/pipelines/controller.ts"],
+    contractsInvariants: ["Selection happens before synthesis writes"],
+    risks: ["Caller worktree drift must prevent promotion"],
+    unknowns: ["Live provider availability is not exercised by this fixture"],
+    assumptions: ["Validated discovery reports are complete"],
+    verificationExpectations: ["Run deterministic repository checks"],
+  };
+}
+
+function candidateHandoff(
+  role: FeatureCandidateRole,
+  spec: AgentNodeSpec,
+  baseCommit = BASE_COMMIT,
+) {
+  const changedPath = `src/${role.toLowerCase()}.ts`;
+  return {
+    reportType: "feature-implementation-candidate-v1" as const,
+    role,
+    approachSummary: `${role} complete implementation`,
+    changedPaths: [changedPath],
+    checks: ["focused test passed"],
+    assumptions: [],
+    tradeoffs: ["Role objective was applied without sacrificing correctness"],
+    unresolvedIssues: [],
+    worktreePath: spec.cwd,
+    branchRef: `pipi-feature/test/candidate-${role.toLowerCase()}`,
+    baseCommit,
+    candidateHeadCommit: CANDIDATE_COMMITS[role],
+  };
+}
+
+function comparison(role: FeatureCandidateRole) {
+  return {
+    role,
+    criteria: {
+      correctness: "Meets the feature contract",
+      acceptanceCoverage: "Covers the observable criterion",
+      regressionRisk: "Focused and verified",
+      repositoryFit: "Uses repository patterns",
+      simplicity:
+        role === "Minimal" ? "Simplest reliable candidate" : "More involved",
+      maintainability: "Maintainable within scope",
+      verificationQuality: "Focused check passed",
+    },
+    usableBase: true,
+  };
+}
+
+function selectionResult() {
+  return {
+    reportType: "feature-implementation-selection-v1" as const,
+    selectionOnlyAcknowledgement:
+      "No code was written before primary selection." as const,
+    comparisons: FEATURE_CANDIDATE_ROLES.map(comparison),
+    primaryCandidate: "Minimal" as const,
+    rationale:
+      "Minimal is the simplest candidate that fully and reliably solves the task.",
+    augmentationCandidates: [],
+  };
+}
+
+function implementationSynthesisResult() {
+  return {
+    reportType: "feature-implementation-synthesis-v1" as const,
+    primaryCandidate: "Minimal" as const,
+    primaryCommit: CANDIDATE_COMMITS.Minimal,
+    acceptedAugmentations: [],
+    rejectedAugmentations: [],
+    changedPaths: [],
+    checks: ["npm test passed in Minimal candidate workspace"],
+    assumptions: [],
+    unresolvedIssues: [],
+    finalCommit: FINAL_SYNTHESIS_COMMIT,
+  };
 }
 
 function reportForRole(role: string) {
@@ -495,7 +787,15 @@ async function finishEmbeddedAudit(
       finalText: synthesisReport(
         "audit-synthesis-final",
         AUDIT_SEGMENT_LUNA_ROLES,
-        { baseSha: headSha, headSha },
+        {
+          baseSha:
+            run.controller.get(runId)?.definition === "feature-pipeline"
+              ? (run.lifecycles.find((lifecycle) =>
+                  lifecycle.temporaryRoot.includes(runId),
+                )?.caller.baseCommit ?? BASE_COMMIT)
+              : headSha,
+          headSha,
+        },
       ),
     },
   });
@@ -592,7 +892,7 @@ test("start is fire-and-forget and multiple same-cwd runs are admitted", async (
   await settleInitialization();
   assert.equal(gated.controller.get(firstId)?.status, "running");
   assert.equal(gated.controller.get(secondId)?.status, "running");
-  assert.equal(gated.sessions.length, 12);
+  assert.equal(gated.sessions.length, 22);
   assert.equal(
     gated.sessions
       .filter((session) => session.spec.role === "pipeline-root")
@@ -605,67 +905,248 @@ test("start is fire-and-forget and multiple same-cwd runs are admitted", async (
   await gated.controller.dispose();
 });
 
-test("feature discovery runs programmatically before the deferred Sol prompt", async () => {
-  const run = harness({ autoCompleteFeatureDiscovery: false });
+test("feature discovery fan-in feeds three parallel Luna/xHIGH candidates with identical complete context", async () => {
+  const run = harness({
+    autoCompleteFeatureDiscovery: false,
+    autoCompleteDiscoverySynthesis: false,
+  });
   const runId = run.controller.start(request());
   await settleInitialization();
 
-  const before = run.controller.get(runId);
-  const root = run.sessions.find(
-    (session) => session.spec.role === "pipeline-root",
+  const synthesis = run.sessions.find(
+    (session) => session.spec.role === FEATURE_DISCOVERY_SYNTHESIS_ROLE,
   );
-  assert.equal(before?.status, "running");
-  assert.equal(before?.stage, "discover");
-  assert.equal(before?.agents[0]?.status, "idle");
-  assert.deepEqual(root?.prompts, []);
-  assert.deepEqual(root?.sends, []);
-  assert.deepEqual(
-    before?.agents.slice(1).map((agent) => agent.role),
-    [
-      "discover-problem",
-      "discover-outcome",
-      "discover-context",
-      "discover-user-scenarios",
-      "discover-product-precedents",
-    ],
+  assert.ok(synthesis);
+  assert.equal(synthesis.prompts.length, 0);
+  assert.equal(synthesis.sends.length, 0);
+  assert.equal(
+    run.sessions.some((session) => candidateRoleFromSpec(session.spec.role)),
+    false,
   );
 
-  for (const role of [
-    "discover-problem",
-    "discover-outcome",
-    "discover-context",
-    "discover-user-scenarios",
-    "discover-product-precedents",
-  ]) {
+  for (const role of [...FEATURE_PIPELINE_DISCOVERY_ROLES].reverse()) {
     settleRole(run, role);
   }
   await settleInitialization();
+  assert.equal(synthesis.sends.length, 1);
+  let priorIndex = -1;
+  for (const role of FEATURE_PIPELINE_DISCOVERY_ROLES) {
+    const index = (synthesis.sends[0] ?? "").indexOf(`\"role\":\"${role}\"`);
+    assert.ok(index > priorIndex, role);
+    priorIndex = index;
+  }
 
-  const started = run.controller.get(runId);
-  assert.equal(started?.stage, "build");
-  assert.equal(started?.agents[0]?.status, "running");
-  assert.deepEqual(root?.prompts, []);
-  assert.equal(root?.sends.length, 1);
-  assert.match(root?.sends[0] ?? "", /host completed the Discover stage/);
-  assert.match(root?.sends[0] ?? "", /discover-product-precedents/);
-  assert.match(root?.sends[0] ?? "", /repository evidence/);
-  assert.throws(
-    () => run.controller.setStage(runId, "discover"),
-    /cannot return to controller-owned discovery after bootstrap/,
+  synthesis.emit({
+    type: "settled",
+    outcome: {
+      type: "completed",
+      finalText: JSON.stringify(discoverySynthesisResult()),
+    },
+  });
+  await settleInitialization();
+
+  const candidates = run.sessions.filter((session) =>
+    candidateRoleFromSpec(session.spec.role),
   );
-  await assert.rejects(
-    run.controller.spawnChild(runId, "discover-problem"),
-    /controller-owned and unavailable to feature-pipeline Sol/,
+  assert.equal(candidates.length, 3);
+  assert.deepEqual(
+    candidates.map((session) => candidateRoleFromSpec(session.spec.role)),
+    [...FEATURE_CANDIDATE_ROLES],
   );
-  const discovery = started?.agents.find(
-    (agent) => agent.role === "discover-problem",
+  assert.equal(
+    candidates.every(
+      (session) =>
+        session.spec.model === LUNA_MODEL &&
+        session.spec.thinkingLevel === "xhigh" &&
+        session.prompts.length === 1,
+    ),
+    true,
   );
-  assert.ok(discovery);
-  await assert.rejects(
-    run.controller.sendChild(runId, discovery.id, "Retry discovery"),
-    /controller-owned and unavailable to Sol/,
+  assert.equal(new Set(candidates.map((session) => session.spec.cwd)).size, 3);
+  const packages = candidates.map(
+    (session) =>
+      (session.prompts[0] ?? "")
+        .split("COMMON_PREPARED_DISCOVERY_PACKAGE:\n")[1]
+        ?.split("\nEND_COMMON_PREPARED_DISCOVERY_PACKAGE")[0],
+  );
+  assert.equal(packages.every(Boolean), true);
+  assert.equal(new Set(packages).size, 1);
+  assert.match(packages[0] ?? "", /Implement the approved feature/);
+  for (const role of FEATURE_PIPELINE_DISCOVERY_ROLES) {
+    assert.match(packages[0] ?? "", new RegExp(role));
+  }
+  assert.match(packages[0] ?? "", /verificationExpectations/);
+  assert.equal(run.controller.get(runId)?.stage, "build");
+  assert.equal(run.lifecycles[0]?.promoted, 1);
+  assert.equal(run.lifecycles[0]?.cleaned, 1);
+
+  const implementationSynthesis = run.sessions.filter(
+    (session) => session.spec.role === FEATURE_IMPLEMENTATION_SYNTHESIS_ROLE,
+  );
+  assert.equal(implementationSynthesis.length, 1);
+  assert.equal(implementationSynthesis[0]?.spec.model, LUNA_MODEL);
+  assert.equal(implementationSynthesis[0]?.spec.thinkingLevel, "xhigh");
+  assert.equal(implementationSynthesis[0]?.prompts.length, 1);
+  assert.equal(implementationSynthesis[0]?.sends.length, 1);
+  const root = run.sessions.find(
+    (session) => session.spec.role === "pipeline-root",
+  );
+  assert.ok(root);
+  assert.doesNotMatch(root.sends[0] ?? "", /bbbbbbbb|"primaryCandidate"/);
+  assert.doesNotMatch(root.sends[0] ?? "", /Minimal candidate workspace/);
+  assert.match(root.sends[0] ?? "", /npm test passed in \[internal\]/);
+
+  await run.controller.dispose();
+});
+
+test("Best-of-3 provenance is retained internally but excluded from pre-final and final audit prompts", async () => {
+  const run = harness();
+  const runId = run.controller.start(request());
+  await settleInitialization();
+  run.controller.setStage(runId, "audit");
+  const child = await run.controller.spawnChild(
+    runId,
+    "audit-feature-outcome",
+    "WINNER_MARKER primaryCandidate Minimal bbbbbbbb borrowed idea",
+  );
+  const preFinal = run.sessions.find(
+    (session) =>
+      session.spec.role === child.role &&
+      session.spec.attempt === child.attempt,
+  );
+  assert.ok(preFinal);
+  assert.doesNotMatch(
+    preFinal.prompts[0] ?? "",
+    /WINNER_MARKER|"primaryCandidate"|bbbbbbbb|pipi-feature\/test\/candidate/,
+  );
+  assert.match(preFinal.prompts[0] ?? "", /reviewedState/);
+
+  run.controller.setStage(runId, "final-audit");
+  const finalAgents = await run.controller.startFinalAudit(runId, {
+    acceptanceContract: "WINNER_MARKER primaryCandidate Minimal",
+    assumptions: ["borrowed idea from Robust"],
+    checks: ["candidate commit bbbbbbbb"],
+  });
+  assert.equal(finalAgents.length, 6);
+  const finalTrack = run.sessions.find(
+    (session) =>
+      session.spec.role === "audit-logic-invariants" &&
+      session.spec.attempt === 1,
+  );
+  assert.ok(finalTrack);
+  assert.doesNotMatch(
+    finalTrack.prompts[0] ?? "",
+    /WINNER_MARKER|"primaryCandidate"|bbbbbbbb|borrowed idea/,
+  );
+  assert.match(finalTrack.prompts[0] ?? "", /npm test passed in \[internal\]/);
+  await run.controller.dispose();
+});
+
+test("selection is read-only before the same Luna agent receives primary-based augmentation", async () => {
+  const run = harness({ autoCompleteSelectionAndSynthesis: false });
+  const runId = run.controller.start(request());
+  await settleInitialization();
+
+  const synthesis = run.sessions.find(
+    (session) => session.spec.role === FEATURE_IMPLEMENTATION_SYNTHESIS_ROLE,
+  );
+  assert.ok(synthesis);
+  assert.equal(run.controller.get(runId)?.stage, "discover");
+  assert.equal(run.lifecycles[0]?.selectionReadOnlyChecks, 0);
+  assert.match(synthesis.prompts[0] ?? "", /selection-only and read-only/i);
+  assert.match(
+    synthesis.prompts[0] ?? "",
+    /correctness, acceptance coverage, regression risk, repository fit, simplicity, maintainability, verification quality/,
   );
 
+  synthesis.emit({
+    type: "settled",
+    outcome: {
+      type: "completed",
+      finalText: JSON.stringify(selectionResult()),
+    },
+  });
+  await settleInitialization();
+  assert.equal(run.lifecycles[0]?.selectionReadOnlyChecks, 1);
+  assert.equal(synthesis.sends.length, 1);
+  assert.equal(synthesis.mutationEnabled, 1);
+  assert.match(
+    synthesis.sends[0] ?? "",
+    /starting from that immutable primary commit/,
+  );
+  assert.match(
+    synthesis.sends[0] ?? "",
+    /do not silently write a fourth implementation/i,
+  );
+
+  synthesis.emit({
+    type: "settled",
+    outcome: {
+      type: "completed",
+      finalText: JSON.stringify(implementationSynthesisResult()),
+    },
+  });
+  await settleInitialization();
+  assert.equal(run.controller.get(runId)?.stage, "build");
+  assert.equal(
+    run.sessions.filter(
+      (session) => session.spec.role === FEATURE_IMPLEMENTATION_SYNTHESIS_ROLE,
+    ).length,
+    1,
+  );
+  assert.equal(run.lifecycles[0]?.promoted, 1);
+  await run.controller.dispose();
+});
+
+test("invalid selection is corrected in the same session and no fourth implementation is created", async () => {
+  const run = harness({ autoCompleteSelectionAndSynthesis: false });
+  const runId = run.controller.start(request());
+  await settleInitialization();
+  const synthesis = run.sessions.find(
+    (session) => session.spec.role === FEATURE_IMPLEMENTATION_SYNTHESIS_ROLE,
+  );
+  assert.ok(synthesis);
+
+  for (let rejection = 1; rejection <= 3; rejection++) {
+    synthesis.emit({
+      type: "settled",
+      outcome: { type: "completed", finalText: `invalid-${rejection}` },
+    });
+    await settleInitialization();
+    assert.equal(run.controller.get(runId)?.status, "running");
+    assert.match(
+      synthesis.sends.at(-1) ?? "",
+      new RegExp(`correction ${rejection}/3`),
+    );
+    assert.equal(
+      run.sessions.filter((session) => candidateRoleFromSpec(session.spec.role))
+        .length,
+      3,
+    );
+  }
+  synthesis.emit({
+    type: "settled",
+    outcome: { type: "completed", finalText: "invalid-four" },
+  });
+  await settleInitialization();
+  assert.equal(run.controller.get(runId)?.status, "failed");
+  assert.match(
+    run.controller.get(runId)?.error ?? "",
+    /rejected settled turn 4/,
+  );
+  assert.equal(run.lifecycles[0]?.promoted, 0);
+  assert.ok((run.lifecycles[0]?.cleaned ?? 0) >= 1);
+  await run.controller.dispose();
+});
+
+test("feature cancellation cleans only the run lifecycle without promotion", async () => {
+  const run = harness({ autoCompleteFeatureDiscovery: false });
+  const runId = run.controller.start(request());
+  await settleInitialization();
+  await run.controller.cancelRun(runId);
+  assert.equal(run.controller.get(runId)?.status, "cancelled");
+  assert.equal(run.lifecycles[0]?.promoted, 0);
+  assert.ok((run.lifecycles[0]?.cleaned ?? 0) >= 1);
   await run.controller.dispose();
 });
 
@@ -679,9 +1160,6 @@ test("feature discovery tool payload is bound to its session and consumed only a
   }
   const problem = run.sessions.find(
     (session) => session.spec.role === "discover-problem",
-  );
-  const root = run.sessions.find(
-    (session) => session.spec.role === "pipeline-root",
   );
   assert.ok(problem?.discoverySubmit);
   assert.throws(
@@ -698,7 +1176,10 @@ test("feature discovery tool payload is bound to its session and consumed only a
     /already recorded a submission/,
   );
   assert.equal(run.controller.get(runId)?.stage, "discover");
-  assert.equal(root?.sends.length, 0);
+  assert.equal(
+    run.sessions.some((session) => session.spec.role === "pipeline-root"),
+    false,
+  );
 
   problem.emit({
     type: "settled",
@@ -710,10 +1191,15 @@ test("feature discovery tool payload is bound to its session and consumed only a
   await settleInitialization();
 
   assert.equal(run.controller.get(runId)?.stage, "build");
-  assert.equal(root?.sends.length, 1);
-  assert.match(root?.sends[0] ?? "", /"submission":"tool"/);
-  assert.match(root?.sends[0] ?? "", /"reportType":"feature-discovery-v2"/);
-  assert.doesNotMatch(root?.sends[0] ?? "", /\\"reportType\\"/);
+  const candidate = run.sessions.find(
+    (session) => session.spec.role === "candidate-minimal",
+  );
+  assert.equal(candidate?.prompts.length, 1);
+  assert.match(candidate?.prompts[0] ?? "", /"submission":"tool"/);
+  assert.match(
+    candidate?.prompts[0] ?? "",
+    /"reportType":"feature-discovery-v2"/,
+  );
   await run.controller.dispose();
 });
 
@@ -853,9 +1339,8 @@ test("feature discovery uses independent correction counters and fails on reject
   );
   assert.equal(context.interrupted, 1);
   assert.equal(
-    run.sessions.find((session) => session.spec.role === "pipeline-root")?.sends
-      .length,
-    0,
+    run.sessions.some((session) => session.spec.role === "pipeline-root"),
+    false,
   );
   await run.controller.dispose();
 });
@@ -901,7 +1386,7 @@ test("root tools are run-scoped and feature discovery children are read-only", a
   const runId = run.controller.start(request());
   await settleInitialization();
 
-  assert.equal(run.controller.get(runId)?.agents.length, 6);
+  assert.equal(run.controller.get(runId)?.agents.length, 11);
   assert.deepEqual(run.rootToolNames, [
     "pipeline_stage",
     "pipeline_child_spawn",
@@ -986,6 +1471,30 @@ test("feature root retains commit-capable tools while every child stays constrai
   );
   for (const rootTool of ["bash", "edit", "write"]) {
     assert.equal(rootDenied.has(rootTool), false);
+  }
+
+  const discoverySynthesisDenied = new Set<string>(
+    pipelineSessionToolPolicy(
+      "feature-pipeline",
+      true,
+      FEATURE_DISCOVERY_SYNTHESIS_ROLE,
+    ).excludeTools,
+  );
+  for (const mutator of ["bash", "edit", "write", "pipeline_child_spawn"]) {
+    assert.equal(discoverySynthesisDenied.has(mutator), true);
+  }
+  for (const role of [
+    "candidate-minimal",
+    FEATURE_IMPLEMENTATION_SYNTHESIS_ROLE,
+  ]) {
+    const denied = new Set<string>(
+      pipelineSessionToolPolicy("feature-pipeline", false, role).excludeTools,
+    );
+    for (const codingTool of ["bash", "edit", "write"]) {
+      assert.equal(denied.has(codingTool), false, role);
+    }
+    assert.equal(denied.has("pipeline_child_spawn"), true, role);
+    assert.equal(denied.has("codex_task"), true, role);
   }
 
   const discoveryDenied = new Set<string>(
@@ -1128,9 +1637,12 @@ test("roles select fixed models, remain direct root children, and record attempt
   );
   assert.equal(first.attempt, 1);
   assert.equal(retry.attempt, 2);
-  assert.equal(run.controller.get(runId)?.agents[0]?.model, SOL_MODEL);
+  assert.equal(run.controller.getAgent(runId, rootId).model, LUNA_MODEL);
+  assert.equal(run.controller.getAgent(runId, rootId).thinkingLevel, "xhigh");
   assert.equal(pipelineThinkingLevel(SOL_MODEL), "high");
   assert.equal(pipelineThinkingLevel(TERRA_MODEL), "high");
+  assert.equal(pipelineThinkingLevel(LUNA_MODEL, "xhigh"), "xhigh");
+  assert.equal(pipelineThinkingLevel(SOL_MODEL, "medium"), "medium");
   assert.equal(
     run.controller
       .get(runId)
@@ -1151,6 +1663,7 @@ test("plan-pipeline preserves earlier roles and uses a controller-owned Luna fin
   const runId = run.controller.start({
     ...request(workingDir),
     pipeline: "plan-pipeline",
+    gitCommit: false,
   });
   await settleInitialization();
   const snapshot = run.controller.get(runId);
@@ -1233,6 +1746,7 @@ test("small-feature-pipeline fans four Luna audits into one same-session remedia
   const runId = run.controller.start({
     ...request(),
     pipeline: "small-feature-pipeline",
+    gitCommit: false,
   });
   await settleInitialization();
 
@@ -1459,6 +1973,7 @@ test("small-feature Luna audits receive the captured base, implementation report
   const runId = run.controller.start({
     ...request(workingDir),
     pipeline: "small-feature-pipeline",
+    gitCommit: false,
   });
   await settleInitialization();
   fs.writeFileSync(path.join(workingDir, "src", "feature.ts"), "committed\n");
@@ -1521,6 +2036,7 @@ test("small-feature-pipeline fails closed on a malformed implementation report",
   const runId = run.controller.start({
     ...request(),
     pipeline: "small-feature-pipeline",
+    gitCommit: false,
   });
   await settleInitialization();
   const implementer = await run.controller.spawnChild(
@@ -1555,6 +2071,7 @@ test("small-feature-pipeline fails closed on a malformed Luna audit report", asy
   const runId = run.controller.start({
     ...request(),
     pipeline: "small-feature-pipeline",
+    gitCommit: false,
   });
   await settleInitialization();
   const implementer = await run.controller.spawnChild(
@@ -1589,6 +2106,7 @@ test("children run in parallel and wait returns reports in caller order", async 
   const runId = run.controller.start({
     ...request(),
     pipeline: "plan-pipeline",
+    gitCommit: false,
   });
   await settleInitialization();
   const roles = PLAN_PIPELINE_DISCOVERY_ROLES;
@@ -1701,6 +2219,7 @@ test("fan-in does not advance when a required plan report is invalid", async () 
   const runId = run.controller.start({
     ...request(),
     pipeline: "plan-pipeline",
+    gitCommit: false,
   });
   await settleInitialization();
   const children = await Promise.all(
@@ -1771,6 +2290,7 @@ test("plan-pipeline enforces stage order and one Luna retry", async () => {
   const runId = run.controller.start({
     ...request(),
     pipeline: "plan-pipeline",
+    gitCommit: false,
   });
   await settleInitialization();
   await assert.rejects(
@@ -1807,7 +2327,9 @@ test("persistent Sol session survives idle remediation turns", async () => {
   await settleInitialization();
   const rootId = run.controller.get(runId)?.rootId;
   assert.ok(rootId);
-  const rootSession = run.sessions[0]!;
+  const rootSession = run.sessions.find(
+    (session) => session.spec.role === "pipeline-root",
+  )!;
   rootSession.emit({
     type: "settled",
     outcome: { type: "completed", finalText: "implementation turn" },
@@ -1819,7 +2341,8 @@ test("persistent Sol session survives idle remediation turns", async () => {
   assert.equal(rootSession.sends.length, 2);
   assert.equal(rootSession.sends.at(-1), "Resolve the audit reports");
   assert.equal(
-    run.sessions.filter((session) => !session.spec.parentId).length,
+    run.sessions.filter((session) => session.spec.role === "pipeline-root")
+      .length,
     1,
   );
   assert.equal(run.controller.agentView.get(rootId)?.status, "running");
@@ -1859,7 +2382,9 @@ test("dashboard cancellation of an idle root cancels the run and active children
   await settleInitialization();
   const rootId = run.controller.get(runId)?.rootId;
   assert.ok(rootId);
-  const rootSession = run.sessions[0]!;
+  const rootSession = run.sessions.find(
+    (session) => session.spec.role === "pipeline-root",
+  )!;
   rootSession.emit({
     type: "settled",
     outcome: { type: "completed", finalText: "waiting for next stage" },
@@ -1980,6 +2505,7 @@ test("plan completion requires and validates a repository-local plan artifact", 
     task: "Plan the approved goal",
     workingDir,
     pipeline: "plan-pipeline",
+    gitCommit: false,
   });
   await settleInitialization();
   await advancePlanToComplete(run, runId, "docs/plans/example.md");
@@ -2099,15 +2625,15 @@ test("pipeline inspection compactly represents every controller-reachable settle
 
   const inspected = inspectPipeline(run.controller, runId, 123_456);
   const text = inspected.content[0]?.text ?? "";
-  assert.equal(inspected.details.pipeline.agents.length, 306);
-  assert.equal(inspected.details.pipeline.agents[0]?.id, "node-1");
-  assert.equal(inspected.details.pipeline.agents.at(-1)?.id, "node-306");
+  assert.equal(inspected.details.pipeline.agents.length, 311);
+  assert.equal(inspected.details.pipeline.agents[0]?.id, "node-11");
+  assert.equal(inspected.details.pipeline.agents.at(-1)?.id, "node-311");
   assert.ok(Buffer.byteLength(text, "utf8") <= PIPELINE_CHECK_MAX_BYTES);
   assert.match(
     text,
     /audit-feature-outcome · attempts 1–300 .* · done · 300 agents/,
   );
-  assert.match(text, /- node-1 · pipeline-root/);
+  assert.match(text, /- node-11 · pipeline-root/);
   await run.controller.dispose();
 });
 
@@ -2159,7 +2685,7 @@ test("pipeline roots and children do not apply direct-subagent capacity limits",
     ids.every((id) => run.controller.get(id)?.status === "running"),
     true,
   );
-  assert.equal(run.sessions.length, 30);
+  assert.equal(run.sessions.length, 55);
 
   await run.controller.dispose();
 });

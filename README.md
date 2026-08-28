@@ -43,7 +43,7 @@ Example:
 }
 ```
 
-`pipeline_run` defaults to `feature-pipeline` when `pipeline` is omitted. Set `git_commit: true` only when the persistent implementation agent should be allowed to create ordinary commits on the current branch. Pipelines never receive permission to push, merge, rewrite history, manage branches or worktrees, or deploy.
+`pipeline_run` defaults to `feature-pipeline` when `pipeline` is omitted. Feature runs require Linux bubblewrap, explicit `git_commit: true`, and a clean, attached, dedicated linked Git worktree (not the primary checkout). Five discovery tracks and one discovery synthesis prepare a shared package for three parallel isolated Luna/xHIGH candidates—Minimal, Robust, and Architectural—from the same base. One Luna/xHIGH synthesis agent compares committed candidates, selects exactly one primary before writing, optionally makes bounded primary-based improvements, verifies and commits the result, promotes that exact state to the caller worktree, and cleans only its temporary worktrees. Existing independent audit/remediation then evaluates the promoted result without candidate provenance. Controller-owned candidate/synthesis refs remain inspectable; pipelines never push, rewrite history, deploy, or mutate external delivery state.
 
 Final audits in standalone, feature, and plan contexts use the executor's repository-declared verification contract: standalone/feature executors run the noninteractive repository-wide full test suite after useful focused checks, while targeted tests never substitute for it. If a safe full suite is unavailable or cannot run, the executor records exact evidence and an unproven check. Plan final audits retain their planning-only prohibition on product implementation tests. Only feature `discover-problem` and plan `discover-goal-outcomes` receive ordinary bash for read-only `gh` lookup of referenced GitHub context; all other discovery and audit roles retain their shell boundaries.
 
@@ -83,7 +83,7 @@ See [SETUP.md](SETUP.md) for installation, updates, authentication, MCP configur
 
 ## Notes
 
-Pipeline runs are session-scoped and are not resumed after shutdown or reload. Pipi does not enforce worktree isolation, so the caller remains responsible for choosing an appropriate workspace and branch.
+Pipeline runs are session-scoped and are not resumed after shutdown or reload. `feature-pipeline` enforces its dedicated linked-worktree preflight and controller-owned temporary isolation; callers remain responsible for workspace policy for the other pipeline definitions.
 
 For implementation details, contracts, and limits, see [Hardcoded pipelines design](docs/pipelines-v1-design.md).
 

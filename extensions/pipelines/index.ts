@@ -83,7 +83,7 @@ export const PIPELINE_RUN_PARAMETERS = Type.Object(
     working_dir: Type.Optional(
       Type.String({
         description:
-          "Existing working directory in which the pipeline operates; defaults to the current directory.",
+          "Existing working directory in which the pipeline operates. feature-pipeline requires Linux bubblewrap plus the root of a dedicated clean attached linked Git worktree and rejects the primary checkout; other definitions default to the current directory.",
         minLength: 1,
         maxLength: 16 * 1024,
       }),
@@ -91,7 +91,7 @@ export const PIPELINE_RUN_PARAMETERS = Type.Object(
     git_commit: Type.Optional(
       Type.Boolean({
         description:
-          "Opt-in permission for ordinary commits by only the persistent feature-pipeline Sol root or persistent small-feature implementer; defaults to false. Plan/audit reject true. It adds no workspace, worktree, cleanliness, or branch precondition and never permits push, history rewriting, branch/worktree operations, or external delivery mutation.",
+          "feature-pipeline hard-requires explicit true, Linux bubblewrap, and a dedicated clean attached linked worktree; controller-owned candidates/synthesis and the post-promotion remediation root may make scoped ordinary commits. small-feature remains optional for its persistent implementer. Plan/audit reject true. Never permits push, delivery merge, history rewrite, deployment, or arbitrary branch/worktree operations.",
       }),
     ),
     audit: Type.Optional(
@@ -206,6 +206,7 @@ export default function pipelines(pi: ExtensionAPI) {
         discoverySubmit,
         discoverySessionCreated,
         discoveryToolAllowed,
+        featureCommit,
       ) =>
         createPipelineSessionFactory({
           modelRegistry: ctx.modelRegistry,
@@ -219,6 +220,7 @@ export default function pipelines(pi: ExtensionAPI) {
           discoverySubmit,
           discoverySessionCreated,
           discoveryToolAllowed,
+          featureCommit,
         }),
       onHandoff: deliver,
     });
@@ -246,13 +248,13 @@ export default function pipelines(pi: ExtensionAPI) {
     name: "pipeline_run",
     label: "Run Pipeline",
     description:
-      "Start one of four known hardcoded pipelines in a caller-provided working directory and return its run id immediately: feature-pipeline, small-feature-pipeline, plan-pipeline, or audit-pipeline. Omit pipeline for feature-pipeline. Optional git_commit grants ordinary-commit authority only to the persistent feature Sol root or small-feature implementer; it defaults false and plan/audit reject true.",
+      "Start one of four known hardcoded pipelines in a caller-provided working directory and return its run id immediately: feature-pipeline, small-feature-pipeline, plan-pipeline, or audit-pipeline. Omit pipeline for feature-pipeline. Feature discovery and synthesis feed three parallel isolated Luna/xHIGH implementation candidates; one Luna/xHIGH synthesis agent selects a primary before writing, performs bounded primary-based augmentation, verifies/commits, promotes the exact result, cleans temporary worktrees, then starts independent audit/remediation. feature-pipeline requires git_commit=true, Linux bubblewrap, and a dedicated clean attached linked worktree; small-feature commit permission remains optional and plan/audit reject true.",
     promptSnippet:
       "Start a background implementation, planning, or Luna audit pipeline",
     promptGuidelines: [
       "Select a pipeline by requested outcome. Honor an explicit feature-pipeline, small-feature-pipeline, plan-pipeline, or audit-pipeline request. Use audit-pipeline for routine repository initial or closure audits that require four independent static Luna tracks, one executor-audit contributor, and incremental Luna synthesis without remediation. Use small-feature-pipeline for a bounded, well-specified implementation that fits one Luna implementation, four parallel independent Luna audit tracks, and one same-session Luna remediation pass. Use feature-pipeline for nontrivial new-feature implementation that needs discovery and multi-concern audit. Use plan-pipeline only when the requested deliverable is planning rather than implementation. Omission remains feature-pipeline.",
       "Automatically use plan-pipeline for a durable audited implementation plan, task breakdown, dependency waves, or test/release plan when at least one complexity signal applies: the goal spans two or more of frontend, backend, data, DevOps, or runtime; it includes migration, rollout, rollback, operational readiness, or cross-team sequencing; or acceptance criteria, scope, and dependencies require repository discovery. An explicit plan-pipeline request does not require a complexity signal.",
-      "Do not choose plan-pipeline merely because an implementation request is cross-layer. Do not use implementation or planning pipelines for bugs, refactors, research-only work, or trivial edits; use audit-pipeline only when the requested outcome is a bounded repository audit rather than implementation. A small feature is bounded implementation work that still benefits from independent audit; it is not a synonym for a trivial edit. If the user has not made the desired deliverable—plan versus implementation—clear, ask before launching. git_commit is authoritative and never inferred from task prose; it adds no workspace/branch/worktree precondition and permits only ordinary commits by the named persistent implementation session, never children or other Git/delivery operations. After launch, do not duplicate its work in the same workspace; use pipeline_check occasionally or /pipelines for live inspection while continuing only unrelated work. Do not poll; completion arrives automatically as a follow-up handoff.",
+      "Do not choose plan-pipeline merely because an implementation request is cross-layer. Do not use implementation or planning pipelines for bugs, refactors, research-only work, or trivial edits; use audit-pipeline only when the requested outcome is a bounded repository audit rather than implementation. A small feature is bounded implementation work that still benefits from independent audit; it is not a synonym for a trivial edit. If the user has not made the desired deliverable—plan versus implementation—clear, ask before launching. git_commit is authoritative and never inferred from task prose. feature-pipeline rejects omission/false and requires Linux bubblewrap plus a dedicated clean attached linked worktree; its controller alone owns temporary candidate/synthesis branches, worktrees, exact promotion, and cleanup. No pipeline receives push, delivery-merge, history-rewrite, deployment, or external-state authority. After launch, do not duplicate work in the same workspace; use pipeline_check occasionally or /pipelines for live inspection while continuing only unrelated work. Do not poll; completion arrives automatically as a follow-up handoff.",
     ],
     parameters: PIPELINE_RUN_PARAMETERS,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {

@@ -234,7 +234,7 @@ test("running glyph follows the active stage instead of the persistent root", ()
   assert.equal(buildRow.agentId, root.id);
 });
 
-test("feature final-resolve stage opens the persistent Sol agent", () => {
+test("feature final-resolve stage opens the post-promotion remediation root", () => {
   const root = agent("root-1", { status: "running" });
   const run = {
     ...pipelineRun("run-1", [root]),

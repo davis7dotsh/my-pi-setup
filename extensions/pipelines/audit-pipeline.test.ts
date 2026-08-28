@@ -78,6 +78,8 @@ class FakeSession implements AgentTreeSession {
     this.emit({ type: "user", text });
   }
 
+  enableMutation() {}
+
   async interrupt() {
     this.interrupted++;
     this.emit({ type: "settled", outcome: { type: "cancelled" } });

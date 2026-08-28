@@ -124,17 +124,23 @@ test("git_commit public schema describes the definition and role boundary", () =
     "description",
   );
   assert.equal(typeof description, "string");
-  assert.match(description, /persistent feature-pipeline Sol root/);
-  assert.match(description, /persistent small-feature implementer/);
+  assert.match(description, /feature-pipeline hard-requires explicit true/);
+  assert.match(description, /dedicated clean attached linked worktree/);
+  assert.match(description, /persistent implementer/);
   assert.match(description, /Plan\/audit reject true/);
-  assert.match(description, /no workspace, worktree, cleanliness, or branch/);
-  assert.match(description, /never permits push/);
+  assert.match(description, /Never permits push/);
 });
 
-test("git_commit validation accepts implementation roots and rejects plan/audit", () => {
+test("git_commit validation requires feature true and rejects plan/audit true", () => {
   assert.doesNotThrow(() =>
     assertPipelineGitCommitSupported("feature-pipeline", true),
   );
+  for (const requested of [false]) {
+    assert.throws(
+      () => assertPipelineGitCommitSupported("feature-pipeline", requested),
+      /requires explicit git_commit: true/,
+    );
+  }
   assert.doesNotThrow(() =>
     assertPipelineGitCommitSupported("small-feature-pipeline", true),
   );

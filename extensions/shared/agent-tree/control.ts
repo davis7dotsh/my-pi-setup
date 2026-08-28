@@ -20,6 +20,7 @@ interface MutableNode {
   attempt: number;
   title: string;
   model: string;
+  thinkingLevel?: AgentNodeSnapshot["thinkingLevel"];
   cwd: string;
   persistent: boolean;
   deferredPrompt: boolean;
@@ -206,6 +207,7 @@ export class AgentTreeController {
       attempt: spec.attempt,
       title: spec.title,
       model: spec.model,
+      ...(spec.thinkingLevel ? { thinkingLevel: spec.thinkingLevel } : {}),
       cwd: spec.cwd,
       persistent: spec.persistent ?? false,
       deferredPrompt: spec.deferPrompt ?? false,
@@ -267,6 +269,31 @@ export class AgentTreeController {
     }
   }
 
+  reparent(id: string, parentId: string) {
+    const entry = this.entries.get(id);
+    const parent = this.entries.get(parentId);
+    if (!entry) throw new Error(`Unknown agent id "${id}".`);
+    if (!parent) throw new Error(`Unknown parent agent id "${parentId}".`);
+    if (id === parentId) throw new Error("An agent cannot parent itself.");
+    if (entry.node.scopeId !== parent.node.scopeId) {
+      throw new Error("Agents cannot be reparented across scopes.");
+    }
+    if (entry.node.status === "starting" || entry.node.status === "running") {
+      throw new Error("An active agent cannot be reparented.");
+    }
+    let ancestor: Entry | undefined = parent;
+    while (ancestor) {
+      if (ancestor.node.id === id) {
+        throw new Error("Reparenting would create an agent-tree cycle.");
+      }
+      ancestor = ancestor.node.parentId
+        ? this.entries.get(ancestor.node.parentId)
+        : undefined;
+    }
+    entry.node.parentId = parentId;
+    this.notify(id);
+  }
+
   async startDeferred(id: string, text: string) {
     const entry = this.entries.get(id);
     if (!entry?.session) throw new Error(`Unknown agent id "${id}".`);
@@ -280,6 +307,19 @@ export class AgentTreeController {
       entry.node.deferredPrompt = true;
       throw error;
     }
+  }
+
+  enableMutation(id: string) {
+    const entry = this.entries.get(id);
+    if (!entry?.session) throw new Error(`Unknown agent id "${id}".`);
+    if (entry.node.status !== "idle" && entry.node.status !== "done") {
+      throw new Error(
+        `Agent "${id}" must be settled before mutation is enabled.`,
+      );
+    }
+    entry.session.enableMutation();
+    entry.node.activeTools = [...entry.session.activeTools];
+    this.notify(id);
   }
 
   async send(id: string, text: string) {

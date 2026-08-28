@@ -27,6 +27,8 @@ export interface AgentNodeSnapshot {
   readonly attempt: number;
   readonly title: string;
   readonly model: string;
+  readonly thinkingLevel?:
+    "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   readonly cwd: string;
   readonly persistent: boolean;
   readonly status: AgentNodeStatus;
@@ -83,6 +85,8 @@ export interface AgentTreeSession {
   subscribe(listener: (event: AgentTreeSessionEvent) => void): () => void;
   prompt(text: string): Promise<void>;
   send(text: string): Promise<void>;
+  /** Open the controller-validated mutation phase for a deferred two-phase agent. */
+  enableMutation(): void;
   interrupt(): Promise<void>;
   dispose(): Promise<void> | void;
 }
@@ -94,6 +98,7 @@ export interface AgentNodeSpec {
   readonly attempt: number;
   readonly title: string;
   readonly model: string;
+  readonly thinkingLevel?: AgentNodeSnapshot["thinkingLevel"];
   readonly cwd: string;
   readonly prompt: string;
   readonly persistent?: boolean;

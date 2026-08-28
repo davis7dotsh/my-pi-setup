@@ -201,8 +201,10 @@ export const PIPELINE_DEFINITIONS: ReadonlyArray<PipelineDefinition> = [
   {
     id: FEATURE_PIPELINE_ID,
     title: "Feature pipeline",
-    rootTitle: "Feature pipeline Sol",
-    rootModel: SOL_MODEL,
+    rootTitle: "Feature pipeline post-promotion audit and remediation root",
+    // The controller creates this fixed Luna/xHIGH root only after Best-of-3
+    // synthesis is promoted; implementation candidates are controller-owned.
+    rootModel: LUNA_MODEL,
     childRoles: FEATURE_PIPELINE_CHILD_ROLES,
   },
   {
@@ -314,7 +316,7 @@ export interface PipelineRunRequest {
   readonly workingDir: string;
   readonly task: string;
   readonly pipeline?: PipelineDefinitionId;
-  /** Explicit ordinary-commit opt-in; authority remains definition- and role-scoped. */
+  /** Feature requires true; other definitions retain their scoped policy. */
   readonly gitCommit?: boolean;
   readonly audit?: AuditPipelineInput;
 }
@@ -337,6 +339,11 @@ export function assertPipelineGitCommitSupported(
   definition: PipelineDefinitionId,
   requested: boolean,
 ) {
+  if (definition === FEATURE_PIPELINE_ID && !requested) {
+    throw new Error(
+      "feature-pipeline requires explicit git_commit: true; false or omission is rejected.",
+    );
+  }
   if (requested && !pipelineCommitAuthorityRole(definition)) {
     throw new Error(
       `git_commit is only supported for feature-pipeline and small-feature-pipeline; received ${definition}.`,

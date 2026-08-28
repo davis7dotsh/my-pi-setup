@@ -9,6 +9,7 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { defineTool } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import {
   AUDIT_SYNTHESIS_REPORT_SCHEMA,
   auditTrackReportSchema,
@@ -18,6 +19,7 @@ import {
   childToolPolicy,
   createChildResources,
   executorAuditToolPolicy,
+  featureIsolatedImplementerToolPolicy,
   githubDiscoveryToolPolicy,
   pipelineRootToolPolicy,
   planPipelineChildToolPolicy,
@@ -45,6 +47,12 @@ import {
   type PipelineLunaAuditRole,
 } from "./domain.ts";
 import { featureDiscoveryReportSchema } from "./discovery-report.ts";
+import {
+  FEATURE_CANDIDATE_ROLES,
+  FEATURE_DISCOVERY_SYNTHESIS_ROLE,
+  FEATURE_IMPLEMENTATION_SYNTHESIS_ROLE,
+} from "./feature-best-of-three.ts";
+import { createFeatureToolBoundary } from "./feature-sandbox.ts";
 import type {
   AgentNodeSpec,
   AgentTreeSessionEvent,
@@ -83,6 +91,11 @@ interface PipelineSessionFactoryOptions {
     token: string,
   ) => void;
   readonly discoveryToolAllowed?: (runId: string, role: string) => boolean;
+  readonly featureCommit?: (
+    runId: string,
+    role: string,
+    workingDir: string,
+  ) => string;
 }
 
 function textContent(message: Message) {
@@ -154,8 +167,11 @@ function lastAssistant(session: AgentSession) {
   return undefined;
 }
 
-export function pipelineThinkingLevel(model: string) {
-  return model === LUNA_MODEL ? "medium" : "high";
+export function pipelineThinkingLevel(
+  model: string,
+  requested?: AgentNodeSpec["thinkingLevel"],
+) {
+  return requested ?? (model === LUNA_MODEL ? "medium" : "high");
 }
 
 function auditSubmissionRole(role: string) {
@@ -223,6 +239,17 @@ export function pipelineSessionToolPolicy(
   isRoot: boolean,
   role: string,
 ) {
+  if (role === FEATURE_DISCOVERY_SYNTHESIS_ROLE) {
+    return readOnlyPipelineChildToolPolicy();
+  }
+  if (
+    FEATURE_CANDIDATE_ROLES.some(
+      (candidateRole) => `candidate-${candidateRole.toLowerCase()}` === role,
+    ) ||
+    role === FEATURE_IMPLEMENTATION_SYNTHESIS_ROLE
+  ) {
+    return featureIsolatedImplementerToolPolicy();
+  }
   if (isRoot) {
     if (definition === AUDIT_PIPELINE_ID)
       return readOnlyPipelineChildToolPolicy();
@@ -364,6 +391,17 @@ export function createPipelineSessionFactory(
       });
       const isRoot = !spec.parentId;
       const definition = options.definitionForRun(spec.scopeId ?? "");
+      const candidateRole = FEATURE_CANDIDATE_ROLES.find(
+        (role) => `candidate-${role.toLowerCase()}` === spec.role,
+      );
+      const featureBoundary =
+        definition === FEATURE_PIPELINE_ID &&
+        (candidateRole || spec.role === FEATURE_IMPLEMENTATION_SYNTHESIS_ROLE)
+          ? createFeatureToolBoundary({
+              cwd: spec.cwd,
+              mode: candidateRole ? "candidate" : "selection",
+            })
+          : undefined;
       const submissionRole = auditSubmissionRole(spec.role);
       const discoveryRole = FEATURE_PIPELINE_DISCOVERY_ROLES.find(
         (candidate) => candidate === spec.role,
@@ -417,22 +455,59 @@ export function createPipelineSessionFactory(
             )
           : undefined;
       const customTools =
-        isRoot && definition !== AUDIT_PIPELINE_ID
+        isRoot &&
+        spec.role === "pipeline-root" &&
+        definition !== AUDIT_PIPELINE_ID
           ? options.rootTools(spec.scopeId ?? "")
           : undefined;
+      const featureCommitTool = featureBoundary
+        ? defineTool({
+            name: "pipeline_feature_commit",
+            label: "Commit Feature Candidate State",
+            description:
+              "Ask the feature-pipeline controller to create an ordinary commit from all current changes in this assigned worktree. The controller validates ownership; agents cannot perform branch/worktree/history operations directly.",
+            parameters: Type.Object({}, { additionalProperties: false }),
+            async execute() {
+              const head = options.featureCommit?.(
+                spec.scopeId ?? "",
+                spec.role,
+                spec.cwd,
+              );
+              if (!head) {
+                throw new Error(
+                  "Controller feature commit authority is unavailable.",
+                );
+              }
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: `Controller committed assigned worktree state at ${head}.`,
+                  },
+                ],
+                details: { head },
+              };
+            },
+          })
+        : undefined;
       const sessionTools = [
         ...(customTools ?? []),
+        ...(featureBoundary?.tools ?? []),
+        ...(featureCommitTool ? [featureCommitTool] : []),
         ...(discoveryTool ? [discoveryTool] : []),
         ...(auditTool ? [auditTool] : []),
       ];
       const { session } = await createAgentSession({
         cwd: spec.cwd,
         model,
-        thinkingLevel: pipelineThinkingLevel(spec.model),
+        thinkingLevel: pipelineThinkingLevel(spec.model, spec.thinkingLevel),
         sessionManager: SessionManager.create(spec.cwd),
         settingsManager: resources.settingsManager,
         resourceLoader: resources.loader,
         ...(sessionTools.length > 0 ? { customTools: sessionTools } : {}),
+        ...(featureBoundary
+          ? { tools: [...featureBoundary.initialActiveTools] }
+          : {}),
         ...pipelineSessionToolPolicy(definition, isRoot, spec.role),
       });
       try {
@@ -472,6 +547,17 @@ export function createPipelineSessionFactory(
           return session.isStreaming
             ? session.steer(text)
             : session.prompt(text);
+        },
+        enableMutation() {
+          if (!featureBoundary) return;
+          featureBoundary.enableAugmentation();
+          session.setActiveToolsByName([
+            "read",
+            "bash",
+            "edit",
+            "write",
+            "pipeline_feature_commit",
+          ]);
         },
         async interrupt() {
           if (disposed) return;
