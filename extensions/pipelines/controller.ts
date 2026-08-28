@@ -203,12 +203,27 @@ function requireFinalFindingResolutionEvidence(
   run: MutableRun,
   facts: PipelineCompletionFacts,
 ) {
-  const missing = (run.auditSegment?.finalReport?.findings ?? [])
-    .map(({ id }) => id)
-    .filter((id) => !facts.reports.some((summary) => summary.includes(id)));
-  if (missing.length > 0) {
+  const expectedIds = (run.auditSegment?.finalReport?.findings ?? []).map(
+    ({ id }) => id,
+  );
+  const resolutions = facts.finalFindingResolutions ?? [];
+  const actualIds = resolutions.map(({ findingId }) => findingId);
+  const invalid = resolutions.some(
+    ({ disposition, evidence, verification }) =>
+      (disposition !== "fixed" && disposition !== "rejected") ||
+      !evidence.trim() ||
+      verification.length === 0 ||
+      verification.some((item) => !item.trim()),
+  );
+  if (
+    invalid ||
+    new Set(actualIds).size !== actualIds.length ||
+    actualIds.length !== expectedIds.length ||
+    expectedIds.some((id) => !actualIds.includes(id)) ||
+    actualIds.some((id) => !expectedIds.includes(id))
+  ) {
     throw new Error(
-      `pipeline_complete must account for every delivered final-audit finding ID with fix or evidence-backed rejection: ${missing.join(", ")}.`,
+      `pipeline_complete final_finding_resolutions must contain exactly one structured fixed/rejected record with non-empty evidence and verification for every delivered final-audit finding ID: ${expectedIds.join(", ") || "(none)"}.`,
     );
   }
 }
@@ -281,6 +296,26 @@ function completionSchema() {
     unresolved_items: Type.Array(Type.String({ maxLength: 16_384 }), {
       maxItems: 256,
     }),
+    final_finding_resolutions: Type.Optional(
+      Type.Array(
+        Type.Object(
+          {
+            finding_id: Type.String({ minLength: 1, maxLength: 256 }),
+            disposition: Type.Union([
+              Type.Literal("fixed"),
+              Type.Literal("rejected"),
+            ]),
+            evidence: Type.String({ minLength: 1, maxLength: 16 * 1024 }),
+            verification: Type.Array(
+              Type.String({ minLength: 1, maxLength: 8 * 1024 }),
+              { minItems: 1, maxItems: 64 },
+            ),
+          },
+          { additionalProperties: false },
+        ),
+        { maxItems: 128 },
+      ),
+    ),
     working_dir: Type.String({ maxLength: 16_384 }),
   });
 }
@@ -739,10 +774,11 @@ export class PipelineController {
       synthesisAgent.id,
       "Best-of-3 primary selection",
       (text) => {
-        lifecycle.assertSelectionReadOnly(
-          frozenCandidates.map(({ candidate }) => candidate),
-        );
-        return parseFeatureSelection(text);
+        const candidates = frozenCandidates.map(({ candidate }) => candidate);
+        lifecycle.assertSelectionReadOnly(candidates);
+        const selection = parseFeatureSelection(text);
+        lifecycle.validateSelection(selection, candidates);
+        return selection;
       },
       "Return one strict selection-only JSON object. Do not write code, mutate candidates, or invent a fourth implementation.",
     );
@@ -2512,6 +2548,18 @@ export class PipelineController {
             git: params.git_commits,
             reports: params.report_summaries_references,
             unresolvedItems: params.unresolved_items,
+            ...(params.final_finding_resolutions
+              ? {
+                  finalFindingResolutions: params.final_finding_resolutions.map(
+                    (resolution) => ({
+                      findingId: resolution.finding_id,
+                      disposition: resolution.disposition,
+                      evidence: resolution.evidence,
+                      verification: resolution.verification,
+                    }),
+                  ),
+                }
+              : {}),
             workingDir: params.working_dir,
           });
           return {

@@ -199,6 +199,11 @@ class FakeFeatureLifecycle implements FeatureWorktreeLifecycle {
     this.selectionReadOnlyChecks++;
   }
 
+  validateSelection(
+    _selection: FeatureSelection,
+    _candidates: ReadonlyArray<FrozenFeatureCandidate>,
+  ) {}
+
   createSynthesisWorktree(
     primary: FrozenFeatureCandidate,
   ): FeatureSynthesisWorktree {
@@ -2578,14 +2583,39 @@ test("feature completion appends committed and dirty Git facts without readiness
   });
   fs.writeFileSync(path.join(workingDir, "feature.txt"), "dirty follow-up\n");
   assert.throws(
-    () => run.controller.complete(runId, facts),
-    /account for every delivered final-audit finding ID.*AUD-001/,
+    () =>
+      run.controller.complete(runId, {
+        ...facts,
+        reports: [...facts.reports, "Incidental AUD-001 mention only"],
+      }),
+    /final_finding_resolutions.*AUD-001/,
+  );
+  assert.throws(
+    () =>
+      run.controller.complete(runId, {
+        ...facts,
+        finalFindingResolutions: [
+          {
+            findingId: "AUD-001",
+            disposition: "fixed",
+            evidence: "",
+            verification: ["Focused check passed"],
+          },
+        ],
+      }),
+    /non-empty evidence and verification/,
   );
   const resolvedFacts = {
     ...facts,
-    reports: [
-      ...facts.reports,
-      "AUD-001 fixed by enforcing final report delivery; focused check passed",
+    reports: [...facts.reports, "Final audit resolutions recorded"],
+    finalFindingResolutions: [
+      {
+        findingId: "AUD-001",
+        disposition: "fixed" as const,
+        evidence:
+          "Enforced direct final-report delivery and completion gating.",
+        verification: ["Focused final-resolve regression passed"],
+      },
     ],
   };
   run.controller.complete(runId, resolvedFacts);

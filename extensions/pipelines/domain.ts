@@ -281,6 +281,13 @@ export interface AuditPipelineInput {
   readonly touchedInvariants?: ReadonlyArray<string>;
 }
 
+export interface PipelineFinalFindingResolution {
+  readonly findingId: string;
+  readonly disposition: "fixed" | "rejected";
+  readonly evidence: string;
+  readonly verification: ReadonlyArray<string>;
+}
+
 export interface PipelineCompletionFacts {
   readonly outcome: string;
   readonly planPath?: string;
@@ -290,6 +297,7 @@ export interface PipelineCompletionFacts {
   readonly git: ReadonlyArray<string>;
   readonly reports: ReadonlyArray<string>;
   readonly unresolvedItems: ReadonlyArray<string>;
+  readonly finalFindingResolutions?: ReadonlyArray<PipelineFinalFindingResolution>;
   readonly workingDir: string;
   readonly auditReport?: import("./audit-segment.ts").AuditFinalReport;
 }

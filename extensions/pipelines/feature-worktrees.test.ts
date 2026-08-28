@@ -331,15 +331,64 @@ test("synthesis accepts only fully attributed validated losing-candidate augment
     );
     const primary = frozen.find(({ role }) => role === "Minimal")!;
     const source = frozen.find(({ role }) => role === "Robust")!;
-    const idea = {
+    const idea: FeatureSelection["augmentationCandidates"][number] = {
       sourceRole: source.role,
       idea: "Adopt the Robust edge-case fixture",
       objectiveBenefit: "Covers a concrete missing failure path",
       evidence: "robust.txt contains the verified fixture",
-    } as const;
+      sourcePaths: ["robust.txt"],
+    };
     const selection = selectionFor(primary.role, [idea]);
+    assert.throws(
+      () =>
+        lifecycle.validateSelection(
+          selectionFor(primary.role, [
+            { ...idea, sourcePaths: ["invented.txt"] },
+          ]),
+          frozen,
+        ),
+      /exact unique paths/,
+    );
+    lifecycle.validateSelection(selection, frozen);
     lifecycle.prepareSelectionDirectory();
     const synthesis = lifecycle.createSynthesisWorktree(primary);
+    fs.writeFileSync(
+      path.join(synthesis.path, "fourth.txt"),
+      "unrelated fourth implementation\n",
+    );
+    const unrelatedCommit = lifecycle.commitAssignedWorktree(
+      "implementation-synthesis",
+      synthesis.path,
+    );
+    const unrelatedProvenance: FeatureSynthesisProvenance = {
+      reportType: "feature-implementation-synthesis-v1",
+      primaryCandidate: primary.role,
+      primaryCommit: primary.headCommit,
+      acceptedAugmentations: [
+        {
+          ...idea,
+          pathMappings: [{ sourcePath: "robust.txt", finalPath: "fourth.txt" }],
+        },
+      ],
+      rejectedAugmentations: [],
+      changedPaths: ["fourth.txt"],
+      checks: ["fixture verification passed"],
+      assumptions: [],
+      unresolvedIssues: [],
+      finalCommit: unrelatedCommit,
+    };
+    assert.throws(
+      () =>
+        lifecycle.validateSynthesis(
+          synthesis,
+          unrelatedProvenance,
+          selection,
+          frozen,
+        ),
+      /exactly match its frozen losing-candidate source blob/,
+    );
+
+    fs.rmSync(path.join(synthesis.path, "fourth.txt"));
     fs.copyFileSync(
       path.join(source.path, "robust.txt"),
       path.join(synthesis.path, "robust.txt"),
@@ -355,8 +404,7 @@ test("synthesis accepts only fully attributed validated losing-candidate augment
       acceptedAugmentations: [
         {
           ...idea,
-          sourcePaths: ["robust.txt"],
-          changedPaths: ["robust.txt"],
+          pathMappings: [{ sourcePath: "robust.txt", finalPath: "robust.txt" }],
         },
       ],
       rejectedAugmentations: [],

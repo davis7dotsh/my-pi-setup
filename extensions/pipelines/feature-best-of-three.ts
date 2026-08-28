@@ -156,6 +156,7 @@ export const FEATURE_SELECTION_SCHEMA = Type.Object(
           idea: text(),
           objectiveBenefit: text(),
           evidence: text(),
+          sourcePaths: texts(1, 64),
         },
         { additionalProperties: false },
       ),
@@ -173,7 +174,16 @@ const augmentationSchema = Type.Object(
     objectiveBenefit: text(),
     evidence: text(),
     sourcePaths: texts(1, 64),
-    changedPaths: texts(1, 64),
+    pathMappings: Type.Array(
+      Type.Object(
+        {
+          sourcePath: text(),
+          finalPath: text(),
+        },
+        { additionalProperties: false },
+      ),
+      { minItems: 1, maxItems: 64 },
+    ),
   },
   { additionalProperties: false },
 );
@@ -351,11 +361,14 @@ export function parseFeatureSelection(value: string) {
       item.idea,
       item.objectiveBenefit,
       item.evidence,
+      [...item.sourcePaths].sort(),
     ]),
   );
   if (
     result.augmentationCandidates.some(
-      ({ sourceRole }) => sourceRole === result.primaryCandidate,
+      ({ sourceRole, sourcePaths }) =>
+        sourceRole === result.primaryCandidate ||
+        new Set(sourcePaths).size !== sourcePaths.length,
     ) ||
     new Set(augmentationKeys).size !== augmentationKeys.length
   ) {
@@ -414,7 +427,7 @@ export function buildFeatureSelectionPrompt(
 ) {
   const input = { common, candidates };
   assertBoundedSynthesisInput(input);
-  return `You are the one Luna/xHIGH Best-of-3 synthesis agent. This first phase is selection-only and read-only. The controller has not created a synthesis worktree. Do not write, edit, commit, or average solutions. Use compact comparison first, then selectively deep-read candidate worktrees only when needed. Candidate worktrees are read-only evidence. Your empty selection directory is ${selectionDirectory}.\n\nCompare strictly in this order: correctness, acceptance coverage, regression risk, repository fit, simplicity, maintainability, verification quality. Choose the simplest solution among those that fully and reliably solve the task. Never choose by role name, raw diff size, or architectural ambition. If no candidate is usable, do not invent a fourth implementation; report all unusable so the host fails explicitly.\n\nBOUNDED_SELECTION_INPUT:\n${JSON.stringify(input)}\nEND_BOUNDED_SELECTION_INPUT\n\nReturn exactly one ${FEATURE_SELECTION_REPORT_TYPE} JSON object. Include each role exactly once, one usable selected primary, rationale, and only concrete possible augmentations. selectionOnlyAcknowledgement must be exactly \"No code was written before primary selection.\"`;
+  return `You are the one Luna/xHIGH Best-of-3 synthesis agent. This first phase is selection-only and read-only. The controller has not created a synthesis worktree. Do not write, edit, commit, or average solutions. Use compact comparison first, then selectively deep-read candidate worktrees only when needed. Candidate worktrees are read-only evidence. Your empty selection directory is ${selectionDirectory}.\n\nCompare strictly in this order: correctness, acceptance coverage, regression risk, repository fit, simplicity, maintainability, verification quality. Choose the simplest solution among those that fully and reliably solve the task. Never choose by role name, raw diff size, or architectural ambition. If no candidate is usable, do not invent a fourth implementation; report all unusable so the host fails explicitly. Every augmentation candidate must identify exact unique sourcePaths from that losing candidate's committed changedPaths; the host rejects invented paths before augmentation.\n\nBOUNDED_SELECTION_INPUT:\n${JSON.stringify(input)}\nEND_BOUNDED_SELECTION_INPUT\n\nReturn exactly one ${FEATURE_SELECTION_REPORT_TYPE} JSON object. Include each role exactly once, one usable selected primary, rationale, and only concrete possible augmentations. selectionOnlyAcknowledgement must be exactly \"No code was written before primary selection.\"`;
 }
 
 export function buildFeatureAugmentationPrompt(options: {
@@ -423,5 +436,5 @@ export function buildFeatureAugmentationPrompt(options: {
   synthesisWorktree: string;
   synthesisBranchRef: string;
 }) {
-  return `Primary selection is now host-validated: ${options.selection.primaryCandidate} at ${options.primary.immutableCommit}. The controller replaced your empty selection directory with a synthesis worktree at the exact same path, starting from that immutable primary commit. Synthesis branch: ${options.synthesisBranchRef}.\n\nNow perform bounded augmentation only in ${options.synthesisWorktree}. Follow the supplied repository contract and applicable skills; candidate discovery context is already complete. The final solution must evolve from the primary; do not silently write a fourth implementation from scratch. Add only concrete objectively beneficial ideas already listed in selection.augmentationCandidates and originating from a losing candidate: a simpler local implementation, real edge-case handling/test/invariant, better boundary, or small justified structural improvement. Use none when the primary is already best. For every accepted augmentation, copy sourceRole, idea, objectiveBenefit, and evidence exactly from the validated selection; list exact sourcePaths changed by that losing candidate and every synthesis changedPath attributable to the idea. Every primary-to-final changed path must be attributed exactly once, and acceptedAugmentations must be empty when the final commit is an empty no-augmentation commit. Changed paths beyond the primary are capped at 64 and the augmentation diff is host-bounded. Run repository verification, self-remediate, leave the synthesis branch clean, and use pipeline_feature_commit for the ordinary final commit; the controller creates an empty commit when no code change is beneficial so provenance still has a distinct final commit. Never mutate candidate worktrees/refs, push, merge, rebase, reset/history-rewrite, create/switch/delete branches/worktrees, deploy, or invoke other agents.\n\nValidated selection:\n${JSON.stringify(options.selection)}\n\nReturn exactly one compact ${FEATURE_SYNTHESIS_REPORT_TYPE} JSON object recording primaryCandidate, primaryCommit, fully attributed acceptedAugmentations, rejectedAugmentations, changedPaths, checks, assumptions, unresolvedIssues, and finalCommit.`;
+  return `Primary selection is now host-validated: ${options.selection.primaryCandidate} at ${options.primary.immutableCommit}. The controller replaced your empty selection directory with a synthesis worktree at the exact same path, starting from that immutable primary commit. Synthesis branch: ${options.synthesisBranchRef}.\n\nNow perform bounded augmentation only in ${options.synthesisWorktree}. Follow the supplied repository contract and applicable skills; candidate discovery context is already complete. The final solution must evolve from the primary; do not silently write a fourth implementation from scratch. Add only concrete objectively beneficial ideas already listed in selection.augmentationCandidates and originating from a losing candidate: a simpler local implementation, real edge-case handling/test/invariant, better boundary, or small justified structural improvement. Use none when the primary is already best. For every accepted augmentation, copy sourceRole, idea, objectiveBenefit, evidence, and sourcePaths exactly from the validated selection. Provide pathMappings from each candidate sourcePath to each final synthesis path. The final committed blob (or deletion) at every finalPath must exactly equal the frozen losing candidate's blob (or deletion) at sourcePath; arbitrary hand-written hybrids are forbidden because they would be an unverifiable fourth implementation. Every primary-to-final changed path must appear as exactly one finalPath, and acceptedAugmentations must be empty when the final commit is an empty no-augmentation commit. Changed paths beyond the primary are capped at 64 and the augmentation diff is host-bounded. Run repository verification, self-remediate, leave the synthesis branch clean, and use pipeline_feature_commit for the ordinary final commit; the controller creates an empty commit when no code change is beneficial so provenance still has a distinct final commit. Never mutate candidate worktrees/refs, push, merge, rebase, reset/history-rewrite, create/switch/delete branches/worktrees, deploy, or invoke other agents.\n\nValidated selection:\n${JSON.stringify(options.selection)}\n\nReturn exactly one compact ${FEATURE_SYNTHESIS_REPORT_TYPE} JSON object recording primaryCandidate, primaryCommit, fully attributed acceptedAugmentations, rejectedAugmentations, changedPaths, checks, assumptions, unresolvedIssues, and finalCommit.`;
 }

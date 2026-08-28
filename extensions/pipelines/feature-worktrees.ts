@@ -65,6 +65,10 @@ export interface FeatureWorktreeLifecycle {
   assertSelectionReadOnly(
     candidates: ReadonlyArray<FrozenFeatureCandidate>,
   ): void;
+  validateSelection(
+    selection: FeatureSelection,
+    candidates: ReadonlyArray<FrozenFeatureCandidate>,
+  ): void;
   createSynthesisWorktree(
     primary: FrozenFeatureCandidate,
   ): FeatureSynthesisWorktree;
@@ -337,19 +341,39 @@ function selectionAugmentationKey(value: {
   idea: string;
   objectiveBenefit: string;
   evidence: string;
+  sourcePaths: ReadonlyArray<string>;
 }) {
   return JSON.stringify([
     value.sourceRole,
     value.idea,
     value.objectiveBenefit,
     value.evidence,
+    [...value.sourcePaths].sort(),
   ]);
+}
+
+function blobIdentity(cwd: string, commit: string, filePath: string) {
+  const value = requireGit(
+    cwd,
+    ["ls-tree", "-z", commit, "--", filePath],
+    "Unable to inspect augmentation blob",
+  );
+  if (!value) return "MISSING";
+  const [metadata, listedPath] = value.replace(/\0$/, "").split("\t");
+  if (listedPath !== filePath) return "MISSING";
+  const objectId = metadata?.split(/\s+/)[2];
+  if (!objectId) {
+    throw new Error("Unable to parse augmentation blob identity.");
+  }
+  return objectId;
 }
 
 function validateAugmentationAttribution(
   provenance: FeatureSynthesisProvenance,
   selection: FeatureSelection,
   candidates: ReadonlyArray<FrozenFeatureCandidate>,
+  finalCommit: string,
+  synthesisPath: string,
   actualChangedPaths: ReadonlyArray<string>,
 ) {
   const selectedIdeas = new Set(
@@ -386,18 +410,32 @@ function validateAugmentationAttribution(
         "Accepted augmentation sourcePaths must be unique paths from its losing candidate diff.",
       );
     }
+    const mappedSourcePaths = augmentation.pathMappings.map(
+      ({ sourcePath }) => sourcePath,
+    );
+    const mappedFinalPaths = augmentation.pathMappings.map(
+      ({ finalPath }) => finalPath,
+    );
     if (
-      new Set(augmentation.changedPaths).size !==
-        augmentation.changedPaths.length ||
-      augmentation.changedPaths.some(
-        (item) => !actualChangedPaths.includes(item),
-      )
+      !equalUniquePathSets(mappedSourcePaths, augmentation.sourcePaths) ||
+      new Set(mappedFinalPaths).size !== mappedFinalPaths.length ||
+      mappedFinalPaths.some((item) => !actualChangedPaths.includes(item))
     ) {
       throw new Error(
-        "Accepted augmentation changedPaths must uniquely identify actual primary-to-final changes.",
+        "Accepted augmentation pathMappings must map every selected source path exactly once to unique actual final paths.",
       );
     }
-    attributedPaths.push(...augmentation.changedPaths);
+    for (const mapping of augmentation.pathMappings) {
+      if (
+        blobIdentity(source.path, source.headCommit, mapping.sourcePath) !==
+        blobIdentity(synthesisPath, finalCommit, mapping.finalPath)
+      ) {
+        throw new Error(
+          "Accepted augmentation final content must exactly match its frozen losing-candidate source blob or deletion.",
+        );
+      }
+    }
+    attributedPaths.push(...mappedFinalPaths);
   }
   if (!equalUniquePathSets(attributedPaths, actualChangedPaths)) {
     throw new Error(
@@ -620,6 +658,30 @@ class GitFeatureWorktreeLifecycle implements FeatureWorktreeLifecycle {
     }
   }
 
+  validateSelection(
+    selection: FeatureSelection,
+    candidates: ReadonlyArray<FrozenFeatureCandidate>,
+  ) {
+    for (const augmentation of selection.augmentationCandidates) {
+      const source = candidates.find(
+        ({ role }) => role === augmentation.sourceRole,
+      );
+      if (
+        !source ||
+        !equalUniquePathSets(
+          augmentation.sourcePaths,
+          augmentation.sourcePaths.filter((item) =>
+            source.changedPaths.includes(item),
+          ),
+        )
+      ) {
+        throw new Error(
+          "Selection augmentation sourcePaths must be exact unique paths from the frozen losing-candidate diff.",
+        );
+      }
+    }
+  }
+
   createSynthesisWorktree(primary: FrozenFeatureCandidate) {
     this.assertSelectionReadOnly(
       [...this.candidateHeads].map(([role, headCommit]) => {
@@ -771,6 +833,8 @@ class GitFeatureWorktreeLifecycle implements FeatureWorktreeLifecycle {
       provenance,
       selection,
       candidates,
+      finalCommit,
+      worktree.path,
       changedPaths,
     );
     return { ...worktree, finalCommit, changedPaths };

@@ -146,6 +146,7 @@ test("strict handoff, selection, and synthesis contracts reject incomplete or un
               idea: "rewrite primary",
               objectiveBenefit: "none",
               evidence: "primary evidence",
+              sourcePaths: ["src/minimal.ts"],
             },
           ],
         }),
