@@ -1,6 +1,7 @@
 - run check/format/lint commands when your done making a change. if they don't exist, suggest making them for the project you're in
 - avoid explicit return types unless absolutely needed
 - `as any` should be an absolute last resort. always use real type safety. lean on type inference instead of manually writing new types over and over again
+- do not test prompt correctness by asserting literal words, phrases, or regex matches against prompt text; verify behavior through schemas, controller/tool contracts, state transitions, or executed outcomes instead
 - apply Sol/Terra/Luna concurrency quotas only to direct subagents; pipeline graphs predeclare their roots and children, so pipelines must not enforce, inherit, queue on, or otherwise account for direct-subagent capacity limits
 - after every user-requested Pipi operation that changes source, configuration, installed runtime state, or external Pipi-managed state, append a durable entry to `docs/pipi-setup-record.md`; record the request, action, affected paths or values, verification performed, and any pending step
 - Git-only delivery actions—commit, push, PR creation/merge, branch or worktree cleanup, and target synchronization—are already durable in Git/GitHub; do not record them in `docs/pipi-setup-record.md`, and never create a follow-up commit, branch, or PR solely to record a merge or other Git-only action
