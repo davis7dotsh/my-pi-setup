@@ -628,7 +628,7 @@ class GitFeatureWorktreeLifecycle implements FeatureWorktreeLifecycle {
 
   prepareSelectionDirectory() {
     if (this.selectionDirectory) return this.selectionDirectory;
-    this.selectionDirectory = path.join(this.temporaryRoot, "synthesis");
+    this.selectionDirectory = path.join(this.temporaryRoot, "selection");
     fs.mkdirSync(this.selectionDirectory);
     return this.selectionDirectory;
   }

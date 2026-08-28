@@ -154,6 +154,7 @@ class FakeFeatureLifecycle implements FeatureWorktreeLifecycle {
   cleaned = 0;
   promoted = 0;
   selectionReadOnlyChecks = 0;
+  synthesisCreated = 0;
 
   constructor(runId: string, caller: FeatureCallerWorktree) {
     this.temporaryRoot = `/tmp/${runId}-best-of-three`;
@@ -192,7 +193,7 @@ class FakeFeatureLifecycle implements FeatureWorktreeLifecycle {
   }
 
   prepareSelectionDirectory() {
-    return `${this.temporaryRoot}/synthesis`;
+    return `${this.temporaryRoot}/selection`;
   }
 
   assertSelectionReadOnly(_candidates: ReadonlyArray<FrozenFeatureCandidate>) {
@@ -200,15 +201,26 @@ class FakeFeatureLifecycle implements FeatureWorktreeLifecycle {
   }
 
   validateSelection(
-    _selection: FeatureSelection,
+    selection: FeatureSelection,
     _candidates: ReadonlyArray<FrozenFeatureCandidate>,
-  ) {}
+  ) {
+    if (
+      selection.augmentationCandidates.some(
+        ({ sourceRole }) => sourceRole === selection.primaryCandidate,
+      )
+    ) {
+      throw new Error(
+        "Selection augmentation must originate from a losing candidate before synthesis mutation.",
+      );
+    }
+  }
 
   createSynthesisWorktree(
     primary: FrozenFeatureCandidate,
   ): FeatureSynthesisWorktree {
+    this.synthesisCreated++;
     return {
-      path: `${this.temporaryRoot}/synthesis`,
+      path: `${this.temporaryRoot}/selection`,
       branchRef: "pipi-feature/test/synthesis",
       primaryRole: primary.role,
       primaryCommit: primary.headCommit,
@@ -1154,6 +1166,7 @@ test("selection is read-only before the same Luna agent receives primary-based a
   assert.ok(synthesis);
   assert.equal(run.controller.get(runId)?.stage, "discover");
   assert.equal(run.lifecycles[0]?.selectionReadOnlyChecks, 0);
+  assert.equal(run.lifecycles[0]?.synthesisCreated, 0);
   assert.match(synthesis.prompts[0] ?? "", /selection-only and read-only/i);
   assert.match(
     synthesis.prompts[0] ?? "",
@@ -1169,6 +1182,7 @@ test("selection is read-only before the same Luna agent receives primary-based a
   });
   await settleInitialization();
   assert.equal(run.lifecycles[0]?.selectionReadOnlyChecks, 1);
+  assert.equal(run.lifecycles[0]?.synthesisCreated, 1);
   assert.equal(synthesis.sends.length, 1);
   assert.equal(synthesis.mutationEnabled, 1);
   assert.match(
@@ -1208,17 +1222,38 @@ test("invalid selection is corrected in the same session and no fourth implement
   );
   assert.ok(synthesis);
 
-  for (let rejection = 1; rejection <= 3; rejection++) {
+  synthesis.emit({
+    type: "settled",
+    outcome: {
+      type: "completed",
+      finalText: JSON.stringify({
+        ...selectionResult(),
+        augmentationCandidates: [
+          {
+            sourceRole: "Minimal",
+            idea: "Reuse the selected primary as an augmentation",
+            objectiveBenefit: "None",
+            evidence: "Primary candidate diff",
+            sourcePaths: ["src/minimal.ts"],
+          },
+        ],
+      }),
+    },
+  });
+  await settleInitialization();
+  assert.equal(run.controller.get(runId)?.status, "running");
+  assert.equal(run.lifecycles[0]?.synthesisCreated, 0);
+  assert.equal(synthesis.mutationEnabled, 0);
+  assert.equal(synthesis.sends.length, 1);
+
+  for (let rejection = 2; rejection <= 3; rejection++) {
     synthesis.emit({
       type: "settled",
       outcome: { type: "completed", finalText: `invalid-${rejection}` },
     });
     await settleInitialization();
     assert.equal(run.controller.get(runId)?.status, "running");
-    assert.match(
-      synthesis.sends.at(-1) ?? "",
-      new RegExp(`correction ${rejection}/3`),
-    );
+    assert.equal(synthesis.sends.length, rejection);
     assert.equal(
       run.sessions.filter((session) => candidateRoleFromSpec(session.spec.role))
         .length,
