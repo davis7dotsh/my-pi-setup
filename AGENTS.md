@@ -1,3 +1,7 @@
 - run check/format/lint commands when your done making a change. if they don't exist, suggest making them for the project you're in
 - avoid explicit return types unless absolutely needed
 - `as any` should be an absolute last resort. always use real type safety. lean on type inference instead of manually writing new types over and over again
+- install: `npm ci` at the repo root, then `npm ci --ignore-scripts` in each `extensions/*/package-lock.json` directory. Extension `prepare` scripts call `effect-tsgo patch`, which needs a Linux `@effect/tsgo-*` optional binary the macOS-generated lockfiles do not record
+- checks: `npm run check`, `npm run format`, `npm test` (root node:test plus `extensions/file-search` vitest)
+- `npx pi` is the CLI for this setup; there is no long-running web server
+- Firecrawl tools need `FIRECRAWL_API_KEY` in `.env`; tests do not
