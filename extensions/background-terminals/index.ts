@@ -99,6 +99,11 @@ export default function (pi: ExtensionAPI) {
         ui.setWidget(WIDGET_KEY, undefined);
         return;
       }
+      const label = `${running} background terminal${running === 1 ? "" : "s"} running • /ps to view`;
+      if (sessionContext?.mode === "rpc") {
+        ui.setWidget(WIDGET_KEY, [`■ ${label}`]);
+        return;
+      }
       ui.setWidget(WIDGET_KEY, (_tui, theme) => {
         const line =
           theme.fg("warning", "■ ") +
@@ -359,62 +364,58 @@ export default function (pi: ExtensionAPI) {
 
   // --- Result message rendering ------------------------------------------
 
-  pi.registerMessageRenderer(
-    "background-terminal-result",
-    (message, { expanded }, theme) => {
-      const details = (message.details ?? {}) as {
-        id?: string;
-        title?: string;
-        status?: string;
-        exitCode?: number;
-        signal?: string;
+  pi.registerMessageRenderer<{
+    id?: string;
+    title?: string;
+    status?: string;
+    exitCode?: number;
+    signal?: string;
+  }>("background-terminal-result", (message, { expanded }, theme) => {
+    const details = message.details ?? {};
+    const failed = details.status === "failed";
+    const killed = details.status === "killed";
+    const icon = failed
+      ? theme.fg("error", "x")
+      : killed
+        ? theme.fg("muted", "■")
+        : theme.fg("success", "■");
+    const how = killed
+      ? "killed"
+      : (details.signal ?? `exit ${details.exitCode ?? "?"}`);
+    const header =
+      `${icon} ` +
+      theme.fg("accent", theme.bold(`terminal ${details.id ?? "?"}`)) +
+      theme.fg("muted", ` · ${details.title ?? ""} · ${how}`);
+
+    const content = typeof message.content === "string" ? message.content : "";
+    // Remove only the summary line; the Error line (when present) is part
+    // of the actual result and must remain visible. The body carries raw
+    // process output — sanitize ANSI/control chars or the transcript smears.
+    const body = sanitizeText(content.split("\n").slice(1).join("\n").trim());
+
+    if (expanded) {
+      const md = new Markdown(`${body}`, 0, 0, getMarkdownTheme());
+      const container = new Text(header, 0, 0);
+      return {
+        render: (width: number) => [
+          ...container.render(width),
+          ...md.render(width),
+        ],
+        invalidate: () => {
+          container.invalidate();
+          md.invalidate();
+        },
       };
-      const failed = details.status === "failed";
-      const killed = details.status === "killed";
-      const icon = failed
-        ? theme.fg("error", "x")
-        : killed
-          ? theme.fg("muted", "■")
-          : theme.fg("success", "■");
-      const how = killed
-        ? "killed"
-        : (details.signal ?? `exit ${details.exitCode ?? "?"}`);
-      const header =
-        `${icon} ` +
-        theme.fg("accent", theme.bold(`terminal ${details.id ?? "?"}`)) +
-        theme.fg("muted", ` · ${details.title ?? ""} · ${how}`);
+    }
 
-      const content =
-        typeof message.content === "string" ? message.content : "";
-      // Remove only the summary line; the Error line (when present) is part
-      // of the actual result and must remain visible. The body carries raw
-      // process output — sanitize ANSI/control chars or the transcript smears.
-      const body = sanitizeText(content.split("\n").slice(1).join("\n").trim());
-
-      if (expanded) {
-        const md = new Markdown(`${body}`, 0, 0, getMarkdownTheme());
-        const container = new Text(header, 0, 0);
-        return {
-          render: (width: number) => [
-            ...container.render(width),
-            ...md.render(width),
-          ],
-          invalidate: () => {
-            container.invalidate();
-            md.invalidate();
-          },
-        };
-      }
-
-      const previewLines = body.split("\n").slice(0, 8);
-      let text = header;
-      for (const line of previewLines)
-        text += `\n${theme.fg("toolOutput", line)}`;
-      if (body.split("\n").length > 8)
-        text += `\n${theme.fg("dim", "... (ctrl+o to expand)")}`;
-      return new Text(text, 0, 0);
-    },
-  );
+    const previewLines = body.split("\n").slice(0, 8);
+    let text = header;
+    for (const line of previewLines)
+      text += `\n${theme.fg("toolOutput", line)}`;
+    if (body.split("\n").length > 8)
+      text += `\n${theme.fg("dim", "... (ctrl+o to expand)")}`;
+    return new Text(text, 0, 0);
+  });
 
   // --- Command ------------------------------------------------------------
 

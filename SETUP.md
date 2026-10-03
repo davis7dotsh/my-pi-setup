@@ -1,31 +1,58 @@
 # Setup
 
-Clone or copy this repository to `~/.pi/agent`, then install its dependencies:
+## Install
+
+Install Node.js 24 or newer and Pi 1.0.0:
 
 ```sh
-cd ~/.pi/agent
-npm install
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.0.0
 ```
+
+Clone this repository into a fresh directory, then install all extension dependencies using the root npm workspace lockfile:
+
+```sh
+npm ci --ignore-scripts
+npm run check
+npm test
+```
+
+Keep the checkout separate from your personal configuration and register it as a local Pi package:
+
+```sh
+pi install .
+```
+
+The package manifest exports only the included portable extensions, skills, and theme. Pi does not install dependencies for a local package, so run `npm ci --ignore-scripts` first as shown above.
+
+Alternatively, clone directly into `~/.pi/agent` if that directory does not exist, and install dependencies there. Do not overwrite an existing setup's credentials or settings. Restart Pi or use `/reload` after changes.
 
 ## Firecrawl
 
-The search, scrape, and crawl tools require a Firecrawl API key. Follow [Firecrawl's Node.js getting-started guide](https://docs.firecrawl.dev/quickstarts/nodejs) to create one, then copy the example environment file:
+The web tools require a Firecrawl API key. Follow [Firecrawl's getting-started guide](https://docs.firecrawl.dev/quickstarts/nodejs), then copy the example environment file:
 
 ```sh
-cp ~/.pi/agent/.env.example ~/.pi/agent/.env
+cp .env.example .env
 ```
 
-Replace the placeholder in `~/.pi/agent/.env` with your API key.
+Replace the placeholder with your API key. Keep `.env` untracked. If the checkout is separate from `~/.pi/agent`, put the key in `~/.pi/agent/.env` or export `FIRECRAWL_API_KEY` in the environment where Pi starts. Firecrawl is optional; disable or omit the extension if you do not need web tools.
 
-NOTE: if you are an agent, at this step ask the user if they want to use firecrawl, if they do give them the instructions, if not remove the firecrawl extension in their pi setup
+## File search
 
-## fd and rg tools
+The file-search extension exposes `fd` and `rg`. It uses installed binaries (`fdfind` is also supported), then checks `~/.pi/agent/bin/`, and otherwise downloads official release binaries over HTTPS for supported macOS/Linux arm64/x64 platforms. On unsupported platforms, install both tools with your package manager.
 
-The `file-search` extension registers `fd` and `rg` as model tools. No setup is normally needed: at startup it silently uses a system-installed `fd` (or `fdfind` on Debian/Ubuntu) and `rg` when available, or an existing fallback binary in `~/.pi/agent/bin/`. Only when neither exists does it download an official release binary (macOS/Linux, arm64/x64, over HTTPS) into `~/.pi/agent/bin/` and show a one-time notification. If your platform is unsupported, install `fd` and `rg` with your package manager and restart pi.
+## Subagents
+
+Pi subagents use the configured model and credentials. Claude Code and Codex backends require their respective CLIs to be installed and authenticated. No particular model or private endpoint is required.
+
+Credential-dependent backend tests are separate from the default test suite. See the [subagent documentation](extensions/subagents/README.md) for opt-in test instructions.
+
+## Image and PDF parsing
+
+See the [OCR extension documentation](extensions/custom-ocr/README.md) for public-model configuration and the optional local-only pipeline. Network-backed parsing requires your configured model credentials. Local parsing uses separately downloaded public model weights and does not send file contents to a remote provider.
 
 ## Theme
 
-Add the included theme to `~/.pi/agent/settings.json` while keeping your existing settings:
+Merge this into `~/.pi/agent/settings.json` without replacing your existing settings:
 
 ```json
 {
@@ -33,4 +60,6 @@ Add the included theme to `~/.pi/agent/settings.json` while keeping your existin
 }
 ```
 
-Pi will load the extensions, skills, and theme from their directories the next time it starts.
+## Local configuration
+
+Keep authentication, model/provider configuration, sessions, caches, backups, and additional machine-specific extensions out of Git. The extension allowlist in `extensions/.gitignore` prevents accidental inclusion of local integrations. To publish a new portable extension, explicitly add it to that allowlist and the root workspace list.

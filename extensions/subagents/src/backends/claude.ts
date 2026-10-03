@@ -289,6 +289,9 @@ const makeClaudeSession = (
 ): Effect.Effect<SubagentSession, SpawnError, Scope.Scope> =>
   Effect.gen(function* () {
     const input = new ClaudeInput();
+    // This controller belongs to the returned session, not the short-lived
+    // spawn acquisition effect; its scope finalizer aborts it.
+    // @effect-diagnostics-next-line abortControllerInEffect:off
     const abortController = new AbortController();
     const events = yield* Queue.make<SubagentEvent, Cause.Done>();
     const emit = (event: SubagentEvent) => {

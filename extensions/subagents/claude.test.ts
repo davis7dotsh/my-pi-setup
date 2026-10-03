@@ -6,6 +6,8 @@ import { claudeBackend } from "./src/backends/claude.ts";
 import type { ParentContext, SpawnTask } from "./src/domain.ts";
 import { createSubagentRuntime, runTool } from "./src/runtime.ts";
 
+const liveTestsEnabled = process.env.SUBAGENTS_LIVE_TESTS === "1";
+
 const parent: ParentContext = {
   parentCwd: process.cwd(),
   projectTrusted: false,
@@ -16,8 +18,6 @@ function task(prompt: string): SpawnTask {
     prompt,
     title: "live Claude test",
     cwd: process.cwd(),
-    model: "haiku",
-    reasoningEffort: "off",
     parent,
   };
 }
@@ -42,7 +42,7 @@ function deadline<A>(operation: Promise<A>, timeoutMs: number) {
 
 test(
   "Claude backend completes a live manager run",
-  { timeout: 60_000 },
+  { timeout: 60_000, skip: !liveTestsEnabled },
   async (t) => {
     if (!(await claudeAvailable())) {
       t.skip("Claude Code executable is unavailable");
@@ -71,7 +71,7 @@ test(
 
 test(
   "Claude backend interrupt settles a live run as aborted",
-  { timeout: 60_000 },
+  { timeout: 60_000, skip: !liveTestsEnabled },
   async (t) => {
     if (!(await claudeAvailable())) {
       t.skip("Claude Code executable is unavailable");

@@ -10,5 +10,17 @@
     "types": ["node"],
     "verbatimModuleSyntax": true
   },
-  "include": ["extensions/**/*.ts"]
+  "include": [
+    "extensions/ask-user/**/*.ts",
+    "extensions/background-terminals/**/*.ts",
+    "extensions/copy-all/**/*.ts",
+    "extensions/custom-ocr/**/*.ts",
+    "extensions/file-search/**/*.ts",
+    "extensions/firecrawl-search/**/*.ts",
+    "extensions/git-info/**/*.ts",
+    "extensions/model-info/**/*.ts",
+    "extensions/shared/**/*.ts",
+    "extensions/subagents/**/*.ts",
+    "extensions/ui-customization/**/*.ts"
+  ]
 }

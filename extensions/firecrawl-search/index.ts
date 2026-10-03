@@ -238,6 +238,11 @@ export default function firecrawlTools(pi: ExtensionAPI) {
     description: SEARCH_TOOL_DESCRIPTION,
     promptSnippet: SEARCH_PROMPT_SNIPPET,
     promptGuidelines: SEARCH_PROMPT_GUIDELINES,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      openWorldHint: true,
+    },
     parameters: Type.Object({
       query: Type.String({
         description: SEARCH_PARAMETER_DESCRIPTIONS.query,
@@ -283,6 +288,11 @@ export default function firecrawlTools(pi: ExtensionAPI) {
     description: CRAWL_TOOL_DESCRIPTION,
     promptSnippet: CRAWL_PROMPT_SNIPPET,
     promptGuidelines: CRAWL_PROMPT_GUIDELINES,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      openWorldHint: true,
+    },
     parameters: Type.Object({
       url: Type.String({ description: CRAWL_PARAMETER_DESCRIPTIONS.url }),
       limit: Type.Optional(
@@ -364,6 +374,11 @@ export default function firecrawlTools(pi: ExtensionAPI) {
     description: SCRAPE_TOOL_DESCRIPTION,
     promptSnippet: SCRAPE_PROMPT_SNIPPET,
     promptGuidelines: SCRAPE_PROMPT_GUIDELINES,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      openWorldHint: true,
+    },
     parameters: Type.Object({
       url: Type.String({ description: SCRAPE_PARAMETER_DESCRIPTIONS.url }),
       onlyMainContent: Type.Optional(

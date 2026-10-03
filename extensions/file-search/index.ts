@@ -213,6 +213,11 @@ export default function fileSearchTools(pi: ExtensionAPI) {
     description: FD_TOOL_DESCRIPTION,
     promptSnippet: FD_PROMPT_SNIPPET,
     promptGuidelines: FD_PROMPT_GUIDELINES,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      openWorldHint: true,
+    },
     parameters: fdParameters(),
 
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
@@ -284,6 +289,11 @@ export default function fileSearchTools(pi: ExtensionAPI) {
     description: RG_TOOL_DESCRIPTION,
     promptSnippet: RG_PROMPT_SNIPPET,
     promptGuidelines: RG_PROMPT_GUIDELINES,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      openWorldHint: true,
+    },
     parameters: rgParameters(),
 
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {

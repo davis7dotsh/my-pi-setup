@@ -6,6 +6,8 @@ import type { ParentContext, SpawnTask } from "./src/domain.ts";
 import { SubagentManager } from "./src/manager.ts";
 import { createSubagentRuntime, runTool } from "./src/runtime.ts";
 
+const liveTestsEnabled = process.env.SUBAGENTS_LIVE_TESTS === "1";
+
 const parent: ParentContext = {
   parentCwd: process.cwd(),
   projectTrusted: false,
@@ -39,7 +41,7 @@ async function codexAvailable() {
 
 test(
   "Codex backend completes a live manager run",
-  { timeout: 75_000 },
+  { timeout: 75_000, skip: !liveTestsEnabled },
   async (t) => {
     if (!(await codexAvailable())) {
       t.skip("codex executable is unavailable");
@@ -69,7 +71,7 @@ test(
 
 test(
   "Codex backend interrupt settles a live manager run",
-  { timeout: 30_000 },
+  { timeout: 30_000, skip: !liveTestsEnabled },
   async (t) => {
     if (!(await codexAvailable())) {
       t.skip("codex executable is unavailable");

@@ -1,0 +1,15 @@
+node_modules/
+package-lock.json
+extensions/*
+!extensions/ask-user/
+!extensions/background-terminals/
+!extensions/copy-all/
+!extensions/custom-ocr/
+!extensions/file-search/
+!extensions/firecrawl-search/
+!extensions/git-info/
+!extensions/model-info/
+!extensions/shared/
+!extensions/subagents/
+!extensions/ui-customization/
+extensions/**/package-lock.json

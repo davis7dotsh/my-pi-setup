@@ -1,5 +1,6 @@
 # Dependencies
 node_modules/
+extensions/**/package-lock.json
 
 # Downloaded/generated executables
 bin/
@@ -12,8 +13,11 @@ settings.json
 trust.json
 models.json
 models-store.json
-extensions/summaries/config.private.json
-extensions/summaries/config.private.json.*.tmp
+backups/
+AGENTS.md.before-*
+models.json.before-*
+*-models-cache.json
+# Machine-specific extensions are local-only. See extensions/.gitignore.
 
 # Environment variables and secrets
 .env
@@ -27,6 +31,8 @@ extensions/summaries/config.private.json.*.tmp
 *.tmp
 *.swp
 .DS_Store
+__pycache__/
+*.pyc
 
 # Local editor settings
 .vscode/

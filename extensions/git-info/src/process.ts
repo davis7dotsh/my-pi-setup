@@ -1,6 +1,5 @@
 import { Context, Effect, Layer, Stream } from "effect";
-import { ChildProcess } from "effect/unstable/process";
-import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 const MAX_STREAM_CHARS = 10 * 1_024 * 1_024;
 const TRUNCATED_MARKER = "\n[command output truncated]\n";
@@ -32,15 +31,16 @@ export class CommandRunner extends Context.Service<
   CommandRunnerShape
 >()("git-info/CommandRunner") {}
 
-function appendCommandFailure(stderr: string, command: string, error: Error) {
-  const failure = `Failed to run ${command}: ${error.message}`;
+function appendCommandFailure(stderr: string, command: string, cause: unknown) {
+  const message = cause instanceof Error ? cause.message : String(cause);
+  const failure = `Failed to run ${command}: ${message}`;
   return stderr ? `${stderr.trimEnd()}\n${failure}` : failure;
 }
 
 export const CommandRunnerLive = Layer.effect(
   CommandRunner,
   Effect.gen(function* () {
-    const spawner = yield* ChildProcessSpawner;
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
     return CommandRunner.of({
       run: (command, args, cwd, timeout) =>

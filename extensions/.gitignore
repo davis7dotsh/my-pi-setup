@@ -1,0 +1,15 @@
+# Only the portable extensions shipped by this repository are versioned.
+# Keep additional machine-specific integrations local.
+/*
+!/.gitignore
+!/ask-user/
+!/background-terminals/
+!/copy-all/
+!/custom-ocr/
+!/file-search/
+!/firecrawl-search/
+!/git-info/
+!/model-info/
+!/shared/
+!/subagents/
+!/ui-customization/

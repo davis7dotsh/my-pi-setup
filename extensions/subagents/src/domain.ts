@@ -65,7 +65,7 @@ export interface SpawnTask {
 
 export interface SubagentMeta {
   readonly backend: BackendName;
-  /** Display label, e.g. "anthropic/claude-opus-4-5" or "gpt-5-codex". */
+  /** Display label reported by the selected backend. */
   readonly modelLabel?: string;
   /** Context window capacity for utilization display, when known. */
   readonly contextWindow?: number;

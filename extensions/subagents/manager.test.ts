@@ -25,14 +25,14 @@ const TestRegistryLive = Layer.sync(BackendRegistry, () => {
     piBackend,
     makeStubBackend({
       backend: "claude",
-      defaultModelLabel: "claude/sonnet",
+      defaultModelLabel: "configured-model-a",
       contextWindow: 200_000,
       toolName: "Bash",
       cadenceMs: 40,
     }),
     makeStubBackend({
       backend: "codex",
-      defaultModelLabel: "codex/gpt-5-codex",
+      defaultModelLabel: "configured-model-b",
       contextWindow: 272_000,
       toolName: "shell",
       cadenceMs: 30,

@@ -5,14 +5,18 @@
   "scripts": {
     "check": "tsc --noEmit -p .",
     "prepare": "effect-tsgo patch",
-    "test": "node --test --experimental-strip-types process.test.ts refresh-coordinator.test.ts"
-  },
-  "devDependencies": {
-    "@effect/tsgo": "^0.24.2",
-    "typescript": "^7.0.2"
+    "test": "node --test --experimental-strip-types changed-files-view.test.ts process.test.ts refresh-coordinator.test.ts"
   },
   "dependencies": {
-    "@effect/platform-node": "^4.0.0-beta.99",
-    "effect": "^4.0.0-beta.99"
+    "@effect/platform-node": "4.0.0",
+    "effect": "4.0.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "devDependencies": {
+    "@effect/tsgo": "0.48.0",
+    "typescript": "7.0.2"
   }
 }

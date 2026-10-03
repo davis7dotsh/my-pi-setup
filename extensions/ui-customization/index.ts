@@ -4,10 +4,12 @@ import type {
   ExtensionAPI,
   ExtensionContext,
   ReadonlyFooterDataProvider,
+  Theme,
 } from "@earendil-works/pi-coding-agent";
 import {
   getCapabilities,
   hyperlink,
+  rgbColor,
   truncateToWidth,
   visibleWidth,
 } from "@earendil-works/pi-tui";
@@ -22,18 +24,6 @@ import {
 } from "../shared/dashboard-state.ts";
 
 type Rgb = [number, number, number];
-interface RenderableNode {
-  children?: RenderableNode[];
-  invalidate(): void;
-  render(width: number): string[];
-}
-
-interface DashboardTui extends RenderableNode {
-  requestRender(force?: boolean): void;
-}
-
-const RESET = "\x1b[0m";
-const BOLD = "\x1b[1m";
 const PALETTE: Rgb[] = [
   [22, 83, 189],
   [48, 129, 247],
@@ -50,8 +40,6 @@ const TITLE_LINES = [
   "  ██║      ██║ ",
   "  ╚═╝      ╚═╝ ",
 ];
-const ANSI_PATTERN =
-  /[\u001B\u009B][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[a-zA-Z\d]*)*)?\u0007)|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g;
 // eslint-disable-next-line no-control-regex
 const OSC_PATTERN =
   /(?:\u001b\]|\u009d)(?:[^\u0007\u001b\u009c]|\u001b(?!\\))*(?:\u0007|\u001b\\|\u009c)/g;
@@ -60,7 +48,7 @@ const CSI_PATTERN = /(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]/g;
 // eslint-disable-next-line no-control-regex
 const ESCAPE_PATTERN = /\u001b(?:[()][0-2A-Z]|[ -/]*[@-~])/g;
 
-function sanitizeTerminalLabel(text: string) {
+export function sanitizeTerminalLabel(text: string) {
   return text
     .replace(OSC_PATTERN, "")
     .replace(CSI_PATTERN, "")
@@ -88,65 +76,23 @@ function sampleGradient(position: number) {
   ] satisfies Rgb;
 }
 
-function foreground([red, green, blue]: Rgb, text: string) {
-  return `\x1b[38;2;${red};${green};${blue}m${text}${RESET}`;
-}
-
-function gradientText(text: string, phase: number) {
+function gradientText(theme: Theme, text: string, phase: number, bold = false) {
   const characters = [...text];
   const span = Math.max(characters.length - 1, 1);
 
   return characters
-    .map((character, index) =>
-      character === " "
-        ? character
-        : foreground(sampleGradient(index / span + phase), character),
-    )
+    .map((character, index) => {
+      if (character === " ") return character;
+      const [red, green, blue] = sampleGradient(index / span + phase);
+      return theme.style(character, {
+        fg: rgbColor(red, green, blue),
+        bold,
+      });
+    })
     .join("");
 }
 
-function hasChildren(
-  component: RenderableNode,
-): component is RenderableNode & { children: RenderableNode[] } {
-  return Array.isArray(component.children);
-}
-
-function renderedText(component: RenderableNode) {
-  try {
-    return component.render(200).join("\n").replace(ANSI_PATTERN, "");
-  } catch {
-    return "";
-  }
-}
-
-function hideThemesSection(component: RenderableNode) {
-  if (!hasChildren(component)) return false;
-
-  for (let index = 0; index < component.children.length; index += 1) {
-    const child = component.children[index]!;
-    const firstLine = renderedText(child)
-      .split("\n")
-      .find((line) => line.trim())
-      ?.trim();
-
-    if (firstLine === "[Themes]") {
-      const removeCount =
-        component.children[index + 1] &&
-        renderedText(component.children[index + 1]!).trim() === ""
-          ? 2
-          : 1;
-      component.children.splice(index, removeCount);
-      component.invalidate();
-      return true;
-    }
-
-    if (hideThemesSection(child)) return true;
-  }
-
-  return false;
-}
-
-function formatTokens(tokens: number) {
+export function formatTokens(tokens: number) {
   if (tokens < 1_000) return `${tokens}`;
   if (tokens < 1_000_000) return `${Math.round(tokens / 1_000)}k`;
   return `${(tokens / 1_000_000).toFixed(1)}m`;
@@ -164,7 +110,7 @@ function center(text: string, width: number) {
   return truncateToWidth(`${" ".repeat(padding)}${text}`, width);
 }
 
-function columns(left: string, right: string, width: number) {
+export function columns(left: string, right: string, width: number) {
   if (!right) return truncateToWidth(left, width);
 
   const naturalGap = width - visibleWidth(left) - visibleWidth(right);
@@ -189,8 +135,6 @@ export default function uiCustomization(pi: ExtensionAPI) {
   let modelInfo = emptyModelInfoState();
   let gitInfo = emptyGitInfoState();
   let requestRender: (() => void) | undefined;
-  let activeTui: DashboardTui | undefined;
-  let themeRemovalTimers: Array<ReturnType<typeof setTimeout>> = [];
 
   const stopModelListener = pi.events.on(MODEL_INFO_CHANNEL, (value) => {
     if (!isModelInfoState(value)) return;
@@ -204,34 +148,19 @@ export default function uiCustomization(pi: ExtensionAPI) {
     requestRender?.();
   });
 
-  function scheduleThemeRemoval(tui: DashboardTui) {
-    for (const timer of themeRemovalTimers) clearTimeout(timer);
-    themeRemovalTimers = [];
-
-    for (const delay of [0, 50, 250, 1_000]) {
-      themeRemovalTimers.push(
-        setTimeout(() => {
-          if (hideThemesSection(tui)) tui.requestRender(true);
-        }, delay),
-      );
-    }
-  }
-
   function install(ctx: ExtensionContext) {
     if (ctx.mode !== "tui") return;
 
-    ctx.ui.setHeader((tui) => {
-      activeTui = tui;
+    ctx.ui.setHeader((tui, theme) => {
       requestRender = () => tui.requestRender();
-      scheduleThemeRemoval(tui);
 
       return {
         render(width: number) {
           const art = TITLE_LINES.map((line, row) =>
-            center(gradientText(line, row * 0.045), width),
+            center(gradientText(theme, line, row * 0.045), width),
           );
           const subtitle = center(
-            `${BOLD}${gradientText(title, 0.18)}${RESET}`,
+            gradientText(theme, title, 0.18, true),
             width,
           );
           return ["", ...art, subtitle, ""];
@@ -309,16 +238,9 @@ export default function uiCustomization(pi: ExtensionAPI) {
     install(ctx);
   });
 
-  pi.on("resources_discover", () => {
-    if (activeTui) scheduleThemeRemoval(activeTui);
-  });
-
   pi.on("session_shutdown", (_event, ctx) => {
     stopModelListener();
     stopGitListener();
-    for (const timer of themeRemovalTimers) clearTimeout(timer);
-    themeRemovalTimers = [];
-    activeTui = undefined;
     requestRender = undefined;
     if (ctx.mode === "tui") {
       ctx.ui.setHeader(undefined);

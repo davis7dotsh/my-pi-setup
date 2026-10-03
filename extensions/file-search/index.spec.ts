@@ -3,7 +3,7 @@ import { assert, it } from "@effect/vitest";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { Effect, FileSystem } from "effect";
-import { HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
+import { HttpClientRequest, HttpClientResponse } from "effect/http";
 import {
   buildFdArgs,
   buildRgArgs,
