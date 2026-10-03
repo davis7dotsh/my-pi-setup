@@ -7,7 +7,6 @@ A portable collection of extensions, skills, and a GitHub Dark-inspired theme fo
 - Multiple-choice questions through the `ask_user` tool.
 - File discovery and content search with `fd` and `rg`.
 - Web search, scraping, and crawling through Firecrawl.
-- Image and PDF parsing with a configurable public model, plus an optional local-only OCR mode.
 - Git status, model usage, clipboard export, and terminal UI customization.
 
 ## Setup
@@ -25,6 +24,6 @@ npm test
 npm run format:check
 ```
 
-The default test suite does not require model credentials. Live backend tests are opt-in; see the subagent documentation. Local OCR inference requires separately downloaded public model weights and is not part of the default test suite.
+The default test suite does not require model credentials. Live backend tests are opt-in; see the subagent documentation.
 
 Only the portable extensions listed in `extensions/.gitignore` are versioned. Credentials, sessions, model configuration, caches, backups, and additional machine-specific extensions remain local. Do not add real credentials to examples or screenshots.

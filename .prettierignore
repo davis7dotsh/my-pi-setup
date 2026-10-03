@@ -4,7 +4,6 @@ extensions/*
 !extensions/ask-user/
 !extensions/background-terminals/
 !extensions/copy-all/
-!extensions/custom-ocr/
 !extensions/file-search/
 !extensions/firecrawl-search/
 !extensions/git-info/

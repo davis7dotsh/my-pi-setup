@@ -46,10 +46,6 @@ Pi subagents use the configured model and credentials. Claude Code and Codex bac
 
 Credential-dependent backend tests are separate from the default test suite. See the [subagent documentation](extensions/subagents/README.md) for opt-in test instructions.
 
-## Image and PDF parsing
-
-See the [OCR extension documentation](extensions/custom-ocr/README.md) for public-model configuration and the optional local-only pipeline. Network-backed parsing requires your configured model credentials. Local parsing uses separately downloaded public model weights and does not send file contents to a remote provider.
-
 ## Theme
 
 Merge this into `~/.pi/agent/settings.json` without replacing your existing settings:

@@ -83,7 +83,6 @@ test(
         "search",
         "scrape",
         "crawl",
-        "parse-file",
         "subagent_spawn",
         "subagent_check",
         "subagent_list",
