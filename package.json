@@ -47,6 +47,8 @@
       "./extensions/firecrawl-search/index.ts",
       "./extensions/git-info/index.ts",
       "./extensions/model-info/index.ts",
+      "./extensions/openai-fast.ts",
+      "./extensions/remember-model.ts",
       "./extensions/subagents/index.ts",
       "./extensions/ui-customization/index.ts"
     ],

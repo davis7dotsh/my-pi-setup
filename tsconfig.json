@@ -18,6 +18,8 @@
     "extensions/firecrawl-search/**/*.ts",
     "extensions/git-info/**/*.ts",
     "extensions/model-info/**/*.ts",
+    "extensions/openai-fast.ts",
+    "extensions/remember-model.ts",
     "extensions/shared/**/*.ts",
     "extensions/subagents/**/*.ts",
     "extensions/ui-customization/**/*.ts"

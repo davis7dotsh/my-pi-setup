@@ -9,6 +9,8 @@
 !/firecrawl-search/
 !/git-info/
 !/model-info/
+!/openai-fast.ts
+!/remember-model.ts
 !/shared/
 !/subagents/
 !/ui-customization/

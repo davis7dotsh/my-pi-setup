@@ -13,6 +13,7 @@ settings.json
 trust.json
 models.json
 models-store.json
+/openai-fast.json
 backups/
 AGENTS.md.before-*
 models.json.before-*

@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { columns, formatTokens, sanitizeTerminalLabel } from "./index.ts";
+import { emptyModelInfoState } from "../shared/dashboard-state.ts";
+import {
+  columns,
+  formatModelLabel,
+  formatTokens,
+  sanitizeTerminalLabel,
+} from "./index.ts";
 
 test("terminal labels discard control and hyperlink escape sequences", () => {
   assert.equal(
@@ -11,6 +17,24 @@ test("terminal labels discard control and hyperlink escape sequences", () => {
     "project",
   );
   assert.equal(sanitizeTerminalLabel("\u001b[31mbranch\u001b[0m"), "branch");
+});
+
+test("fast mode appears subtly beside the model only when enabled", () => {
+  const model = {
+    ...emptyModelInfoState(),
+    provider: "openai",
+    modelId: "gpt-6.1-sol",
+    thinking: "high",
+  };
+  assert.equal(
+    formatModelLabel(model, true),
+    "openai/gpt-6.1-sol · high · fast",
+  );
+  assert.equal(formatModelLabel(model, false), "openai/gpt-6.1-sol · high");
+  assert.equal(
+    formatModelLabel({ ...model, provider: "other" }, true),
+    "other/gpt-6.1-sol · high",
+  );
 });
 
 test("dashboard formatting remains bounded at narrow widths", () => {

@@ -21,6 +21,7 @@ import {
   REFRESH_CHANNEL,
   isGitInfoState,
   isModelInfoState,
+  type ModelInfoState,
 } from "../shared/dashboard-state.ts";
 
 type Rgb = [number, number, number];
@@ -130,6 +131,13 @@ export function columns(left: string, right: string, width: number) {
   );
 }
 
+export function formatModelLabel(modelInfo: ModelInfoState, fast: boolean) {
+  const model = modelInfo.provider
+    ? `${modelInfo.provider}/${modelInfo.modelId} · ${modelInfo.thinking}`
+    : modelInfo.modelId;
+  return fast && modelInfo.provider === "openai" ? `${model} · fast` : model;
+}
+
 export default function uiCustomization(pi: ExtensionAPI) {
   let title = "pi";
   let modelInfo = emptyModelInfoState();
@@ -202,18 +210,20 @@ export default function uiCustomization(pi: ExtensionAPI) {
               ? "— tok/s"
               : `${Math.round(modelInfo.tokensPerSecond)} tok/s`;
           const usage = `${contextPercent}%/${contextWindow} · $${modelInfo.cost.toFixed(2)} · ${tps}`;
-          const model = modelInfo.provider
-            ? `${modelInfo.provider}/${modelInfo.modelId} · ${modelInfo.thinking}`
-            : modelInfo.modelId;
+          const statuses = footerData.getExtensionStatuses();
+          const model = formatModelLabel(
+            modelInfo,
+            statuses.get("openai-fast") === "fast",
+          );
 
           const lines = [
             columns(directory, theme.fg("muted", model), width),
             columns(theme.fg("muted", usage), theme.fg("muted", git), width),
           ];
 
-          // Extension statuses render after the two dashboard lines, one per row.
-          const statuses = footerData.getExtensionStatuses();
+          // Fast mode is inline with the model; other statuses get their own row.
           const statusLines = Array.from(statuses.entries())
+            .filter(([key]) => key !== "openai-fast")
             .sort(([a], [b]) => a.localeCompare(b))
             .flatMap(([, text]) => text.split("\n"));
           for (const statusLine of statusLines) {

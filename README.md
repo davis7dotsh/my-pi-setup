@@ -8,6 +8,9 @@ A portable collection of extensions, skills, and a GitHub Dark-inspired theme fo
 - File discovery and content search with `fd` and `rg`.
 - Web search, scraping, and crawling through Firecrawl.
 - Git status, model usage, clipboard export, and terminal UI customization.
+- Global OpenAI fast mode with `/fast`, `/fast on`, `/fast off`, and `/fast status`. The toggle is saved in `~/.pi/agent/openai-fast.json` (or `PI_CODING_AGENT_DIR`) and persists across threads and restarts.
+  Uses the priority service tier (higher pricing may apply), defaults off, and
+  keeps the toggle global across sessions, reloads, and branch navigation.
 
 ## Setup
 
