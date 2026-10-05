@@ -2,12 +2,19 @@
   "name": "copy-all",
   "scripts": {
     "check": "tsc --noEmit -p .",
-    "prepare": "effect-tsgo patch"
+    "test": "node --test --experimental-strip-types *.test.ts"
   },
   "type": "module",
   "private": true,
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
   "devDependencies": {
-    "@effect/tsgo": "^0.24.2",
     "typescript": "^7.0.2"
   }
 }

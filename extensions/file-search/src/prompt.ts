@@ -1,7 +1,7 @@
 /** Model-facing text for the fd and rg tools. */
 
 export const FD_TOOL_DESCRIPTION =
-  "Find files and directories by name with fd. Respects .gitignore by default. Results are limited to 1000 entries unless a higher limit is given; output is limited to 2000 lines or 50KB, and complete truncated output is saved to a temporary file.";
+  "Find files and directories by name with fd. Respects .gitignore by default. Results are limited to 1000 entries unless a higher limit is given; output is limited to 2000 lines or 50KB, and complete truncated output is saved to a temporary file. Note: pattern is a regex by default, so a bare '*' fails — use '.' to list everything or pass glob: true for globs.";
 
 export const FD_PROMPT_SNIPPET =
   "Find files and directories by name with fd (fast, gitignore-aware).";
@@ -14,7 +14,7 @@ export const FD_PROMPT_GUIDELINES = [
 
 export const FD_PARAMETER_DESCRIPTIONS = {
   pattern:
-    "Regex matched against file names (or a glob when glob is true). Omit to list everything under path.",
+    "Regex matched against file names (or a glob when glob is true). A bare '*' is invalid; use '.' or glob: true. Omit to list everything under path.",
   path: "Directory to search. Defaults to the current working directory.",
   type: "Only return entries of this type: file, directory, or symlink.",
   extension: "Only return files with this extension, e.g. 'ts' or 'md'.",

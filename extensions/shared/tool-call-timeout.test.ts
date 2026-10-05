@@ -62,7 +62,7 @@ test("the guard wraps each definition once and can discover later tools", () => 
     description: name,
     parameters: Type.Object({}),
     async execute() {
-      return { content: [{ type: "text", text: "done" }], details: {} };
+      return { content: [{ type: "text", text: "done" }], details: undefined };
     },
   });
   const first = createDefinition("first");

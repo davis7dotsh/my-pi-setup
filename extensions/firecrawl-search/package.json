@@ -8,11 +8,27 @@
     "test": "node --test *.test.ts"
   },
   "dependencies": {
-    "effect": "^4.0.0-beta.99",
-    "firecrawl": "^4.30.1"
+    "effect": "4.0.0",
+    "firecrawl": "4.42.4"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "typebox": {
+      "optional": true
+    }
   },
   "devDependencies": {
-    "@effect/tsgo": "^0.24.2",
-    "typescript": "^7.0.2"
+    "@effect/tsgo": "0.48.0",
+    "typescript": "7.0.2"
   }
 }

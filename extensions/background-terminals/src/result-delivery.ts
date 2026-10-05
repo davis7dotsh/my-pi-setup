@@ -1,5 +1,5 @@
 /**
- * Deferred one-shot delivery map (same semantics as subagents'): a settled
+ * Deferred one-shot delivery map: a settled
  * terminal's result is held here until it is either drained into a follow-up
  * message or consumed by a tool call (bg_kill / bg_status) that already
  * returned the settlement itself. Keyed by id, so double delivery is

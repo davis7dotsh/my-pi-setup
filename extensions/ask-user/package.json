@@ -7,10 +7,26 @@
     "prepare": "effect-tsgo patch"
   },
   "dependencies": {
-    "effect": "^4.0.0-beta.99"
+    "effect": "4.0.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
+      "optional": true
+    },
+    "typebox": {
+      "optional": true
+    }
   },
   "devDependencies": {
-    "@effect/tsgo": "^0.24.2",
-    "typescript": "^7.0.2"
+    "@effect/tsgo": "0.48.0",
+    "typescript": "7.0.2"
   }
 }

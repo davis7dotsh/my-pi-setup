@@ -15,6 +15,7 @@ import {
   matchesKey,
   Text,
   truncateToWidth,
+  wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { Cause, Effect, Exit } from "effect";
 import { Type, type Static } from "typebox";
@@ -73,29 +74,6 @@ interface DisplayOption {
   isOther?: boolean;
 }
 
-function wrapText(text: string, width: number): string[] {
-  const lines: string[] = [];
-  for (const paragraph of text.split("\n")) {
-    const words = paragraph.split(/\s+/).filter(Boolean);
-    if (words.length === 0) {
-      lines.push("");
-      continue;
-    }
-    let current = "";
-    for (const word of words) {
-      const candidate = current ? `${current} ${word}` : word;
-      if (candidate.length > width && current) {
-        lines.push(current);
-        current = word;
-      } else {
-        current = candidate;
-      }
-    }
-    if (current) lines.push(current);
-  }
-  return lines;
-}
-
 export default function askUser(pi: ExtensionAPI) {
   pi.registerTool({
     name: "ask_user",
@@ -103,6 +81,12 @@ export default function askUser(pi: ExtensionAPI) {
     description: ASK_USER_TOOL_DESCRIPTION,
     promptSnippet: ASK_USER_PROMPT_SNIPPET,
     promptGuidelines: ASK_USER_PROMPT_GUIDELINES,
+    exposure: "model-only",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      openWorldHint: false,
+    },
     parameters: AskUserParams,
 
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
@@ -147,6 +131,7 @@ export default function askUser(pi: ExtensionAPI) {
         ctx.ui.custom<SelectionResult>((tui, theme, _kb, done) => {
           let optionIndex = 0;
           let editMode = false;
+          let focused = false;
           let cachedLines: string[] | undefined;
 
           let settled = false;
@@ -183,6 +168,7 @@ export default function askUser(pi: ExtensionAPI) {
               finish({ answer: trimmed, wasCustom: true });
             } else {
               editMode = false;
+              editor.focused = false;
               editor.setText("");
               refresh();
             }
@@ -198,6 +184,7 @@ export default function askUser(pi: ExtensionAPI) {
             if (selected.isOther) {
               optionIndex = index;
               editMode = true;
+              editor.focused = focused;
               refresh();
             } else {
               finish({
@@ -212,6 +199,7 @@ export default function askUser(pi: ExtensionAPI) {
             if (editMode) {
               if (matchesKey(data, Key.escape)) {
                 editMode = false;
+                editor.focused = false;
                 editor.setText("");
                 refresh();
                 return;
@@ -266,7 +254,7 @@ export default function askUser(pi: ExtensionAPI) {
                 `─${title}${"─".repeat(Math.max(0, width - title.length - 1))}`,
               ),
             );
-            for (const line of wrapText(
+            for (const line of wrapTextWithAnsi(
               params.question,
               Math.max(10, width - 2),
             )) {
@@ -318,6 +306,13 @@ export default function askUser(pi: ExtensionAPI) {
           }
 
           return {
+            get focused() {
+              return focused;
+            },
+            set focused(value: boolean) {
+              focused = value;
+              editor.focused = value && editMode;
+            },
             render,
             invalidate: () => {
               cachedLines = undefined;

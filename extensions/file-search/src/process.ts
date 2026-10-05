@@ -5,7 +5,7 @@ import {
   truncateHead,
 } from "@earendil-works/pi-coding-agent";
 import { Effect, FileSystem, Stream } from "effect";
-import { ChildProcess } from "effect/unstable/process";
+import { ChildProcess } from "effect/process";
 import type { CapturedOutput } from "./output.ts";
 
 const STDERR_MAX_BYTES = 64 * 1024;

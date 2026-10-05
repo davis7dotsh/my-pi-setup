@@ -3,7 +3,7 @@ import {
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 
-function textFromContent(content: unknown) {
+export function textFromContent(content: unknown) {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
 
@@ -28,6 +28,18 @@ function textFromContent(content: unknown) {
     .join("\n");
 }
 
+export function buildTranscriptSections(
+  messages: Iterable<{ role: "user" | "assistant"; content: unknown }>,
+) {
+  return Array.from(messages)
+    .map((message) => ({
+      role: message.role,
+      content: textFromContent(message.content).trim(),
+    }))
+    .filter(({ content }) => content)
+    .map(({ role, content }) => `${role.toUpperCase()}:\n${content}`);
+}
+
 export default function (pi: ExtensionAPI) {
   pi.registerCommand("copy-all", {
     description:
@@ -35,19 +47,14 @@ export default function (pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       await ctx.waitForIdle();
 
-      const sections = ctx.sessionManager
+      const messages = ctx.sessionManager
         .getBranch()
         .filter((entry) => entry.type === "message")
         .map((entry) => entry.message)
         .filter(
           (message) => message.role === "user" || message.role === "assistant",
-        )
-        .map((message) => ({
-          role: message.role,
-          content: textFromContent(message.content).trim(),
-        }))
-        .filter(({ content }) => content)
-        .map(({ role, content }) => `${role.toUpperCase()}:\n${content}`);
+        );
+      const sections = buildTranscriptSections(messages);
 
       if (sections.length === 0) {
         ctx.ui.notify("No user or assistant messages to copy", "info");

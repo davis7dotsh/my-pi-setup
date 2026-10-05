@@ -23,8 +23,13 @@ function getSessionCost(ctx: ExtensionContext) {
   return cost;
 }
 
-function estimateContentTokens(characters: number) {
+export function estimateContentTokens(characters: number) {
   return Math.ceil(characters / CHARS_PER_ESTIMATED_TOKEN);
+}
+
+export function calculateTokensPerSecond(tokens: number, elapsedMs: number) {
+  if (tokens <= 0 || elapsedMs <= 0) return null;
+  return tokens / (elapsedMs / 1_000);
 }
 
 export default function modelInfo(pi: ExtensionAPI) {
@@ -150,8 +155,10 @@ export default function modelInfo(pi: ExtensionAPI) {
 
     state = {
       ...state,
-      tokensPerSecond:
-        estimateContentTokens(streamedCharacters) / (elapsedMs / 1000),
+      tokensPerSecond: calculateTokensPerSecond(
+        estimateContentTokens(streamedCharacters),
+        elapsedMs,
+      ),
     };
     publish();
   });
@@ -187,7 +194,10 @@ export default function modelInfo(pi: ExtensionAPI) {
         runContentStreamMs += streamMs;
         state = {
           ...state,
-          tokensPerSecond: runContentTokens / (runContentStreamMs / 1000),
+          tokensPerSecond: calculateTokensPerSecond(
+            runContentTokens,
+            runContentStreamMs,
+          ),
         };
       }
     }

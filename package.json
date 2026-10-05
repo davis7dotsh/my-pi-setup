@@ -1,22 +1,63 @@
 {
-  "dependencies": {
-    "@earendil-works/pi-ai": "^0.82.0",
-    "@earendil-works/pi-coding-agent": "^0.82.0",
-    "@earendil-works/pi-tui": "^0.82.0",
-    "acorn": "^8.17.0",
-    "firecrawl": "^4.30.0",
-    "typebox": "^1.3.6"
+  "name": "pi-setup",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "workspaces": [
+    "extensions/ask-user",
+    "extensions/background-terminals",
+    "extensions/copy-all",
+    "extensions/file-search",
+    "extensions/firecrawl-search",
+    "extensions/git-info",
+    "extensions/model-info",
+    "extensions/subagents",
+    "extensions/ui-customization"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
   },
   "devDependencies": {
+    "@earendil-works/pi-ai": "1.0.0",
+    "@earendil-works/pi-coding-agent": "1.0.0",
+    "@earendil-works/pi-tui": "1.0.0",
     "@types/node": "^26.1.1",
     "prettier": "^3.9.5",
-    "typescript": "^7.0.2"
+    "typebox": "1.3.27",
+    "typescript": "7.0.2"
   },
-  "type": "module",
   "scripts": {
-    "check": "tsc --noEmit",
-    "format": "prettier --write \"extensions/**/*.{ts,cjs}\" \"*.json\"",
-    "format:check": "prettier --check \"extensions/**/*.{ts,cjs}\" \"*.json\"",
-    "test": "node --test --experimental-strip-types extensions/*/*.test.ts && npm --prefix extensions/file-search test"
+    "check": "tsc --noEmit && npm run check --workspaces --if-present",
+    "format": "prettier --write \"extensions/**/*.{ts,cjs}\" \"test/**/*.mjs\" \"*.json\" \"themes/*.json\" \".github/workflows/*.yml\"",
+    "format:check": "prettier --check \"extensions/**/*.{ts,cjs}\" \"test/**/*.mjs\" \"*.json\" \"themes/*.json\" \".github/workflows/*.yml\"",
+    "test": "npm run test --workspaces --if-present && node --test --experimental-strip-types test/*.test.mjs extensions/shared/*.test.ts",
+    "test:live": "npm run test:live --workspace subagents"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/ask-user/index.ts",
+      "./extensions/background-terminals/index.ts",
+      "./extensions/copy-all/index.ts",
+      "./extensions/file-search/index.ts",
+      "./extensions/firecrawl-search/index.ts",
+      "./extensions/git-info/index.ts",
+      "./extensions/model-info/index.ts",
+      "./extensions/openai-fast.ts",
+      "./extensions/remember-model.ts",
+      "./extensions/subagents/index.ts",
+      "./extensions/ui-customization/index.ts"
+    ],
+    "skills": [
+      "./skills/background-terminals",
+      "./skills/subagents"
+    ],
+    "themes": [
+      "./themes/github-dark-default.json"
+    ]
   }
 }

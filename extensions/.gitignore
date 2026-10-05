@@ -1,0 +1,16 @@
+# Only the portable extensions shipped by this repository are versioned.
+# Keep additional machine-specific integrations local.
+/*
+!/.gitignore
+!/ask-user/
+!/background-terminals/
+!/copy-all/
+!/file-search/
+!/firecrawl-search/
+!/git-info/
+!/model-info/
+!/openai-fast.ts
+!/remember-model.ts
+!/shared/
+!/subagents/
+!/ui-customization/

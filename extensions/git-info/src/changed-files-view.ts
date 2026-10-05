@@ -178,7 +178,7 @@ export async function showChangedFiles(
   if (ctx.mode !== "tui") return;
 
   await ctx.ui.custom<void>(
-    (tui, theme, _keybindings, done) => {
+    (tui, theme, keybindings, done) => {
       let focus: "files" | "diff" = "files";
       let selectedIndex = 0;
       let sidebarOffset = 0;
@@ -247,15 +247,15 @@ export async function showChangedFiles(
 
       function handleInput(data: string) {
         if (focus === "files") {
-          if (matchesKey(data, Key.escape)) {
+          if (keybindings.matches(data, "tui.select.cancel")) {
             done(undefined);
             return;
           }
-          if (matchesKey(data, Key.down) || data === "j") {
+          if (keybindings.matches(data, "tui.select.down") || data === "j") {
             moveFile(1);
             return;
           }
-          if (matchesKey(data, Key.up) || data === "k") {
+          if (keybindings.matches(data, "tui.select.up") || data === "k") {
             moveFile(-1);
             return;
           }
@@ -274,7 +274,7 @@ export async function showChangedFiles(
             return;
           }
           if (
-            matchesKey(data, Key.enter) ||
+            keybindings.matches(data, "tui.select.confirm") ||
             matchesKey(data, Key.space) ||
             matchesKey(data, Key.right) ||
             data === "l"
@@ -286,7 +286,7 @@ export async function showChangedFiles(
         }
 
         if (
-          matchesKey(data, Key.escape) ||
+          keybindings.matches(data, "tui.select.cancel") ||
           matchesKey(data, Key.left) ||
           data === "h"
         ) {
@@ -294,11 +294,14 @@ export async function showChangedFiles(
           tui.requestRender();
           return;
         }
-        if (matchesKey(data, Key.down) || data === "j") {
+        if (
+          keybindings.matches(data, "tui.editor.cursorDown") ||
+          data === "j"
+        ) {
           moveDiff(DIFF_SCROLL_STEP);
           return;
         }
-        if (matchesKey(data, Key.up) || data === "k") {
+        if (keybindings.matches(data, "tui.editor.cursorUp") || data === "k") {
           moveDiff(-DIFF_SCROLL_STEP);
           return;
         }
@@ -332,7 +335,7 @@ export async function showChangedFiles(
         );
         const diffWidth = Math.max(1, width - sidebarWidth - 3);
         const selectedFile = files[selectedIndex]!;
-        const title = `local changes · ${files.length} ${files.length === 1 ? "file" : "files"} · ${focus === "files" ? "FILES" : "DIFF"}`;
+        const title = `local changes · ${files.length} ${files.length === 1 ? "file" : "files"} · ${focus}`;
         const lines = [border(width, title, true)];
 
         for (let row = 0; row < height; row += 1) {

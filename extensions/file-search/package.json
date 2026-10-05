@@ -11,13 +11,33 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@effect/platform-node": "^4.0.0-beta.99",
-    "effect": "^4.0.0-beta.99"
+    "@effect/platform-node": "4.0.0",
+    "effect": "4.0.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
+      "optional": true
+    },
+    "typebox": {
+      "optional": true
+    }
   },
   "devDependencies": {
-    "@effect/tsgo": "^0.24.2",
-    "@effect/vitest": "^4.0.0-beta.99",
-    "typescript": "^7.0.2",
-    "vitest": "4.1.10"
+    "@effect/tsgo": "0.48.0",
+    "@effect/vitest": "4.0.0",
+    "typescript": "7.0.2",
+    "vitest": "5.0.3"
   }
 }
